@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Social Scheduler</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f6f4f'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='white' stroke-width='2.5'/%3E%3Cpath d='M16 11v5l3 2' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="login" class="login" hidden>
+      <div class="login-card">
+        <h1>Social Scheduler</h1>
+        <p>WikiTree's team tool for scheduling posts to its social media accounts.</p>
+        <a class="button primary" href="/auth/login">Sign in with Google</a>
+        <p id="login-msg" class="err small" role="alert"></p>
+        <p class="muted small">Only people an administrator has approved can sign in. Use the Google account whose email you gave them.</p>
+      </div>
+    </div>
+
+    <header class="topbar" id="topbar">
+      <div class="brand">
+        <h1>Social Scheduler</h1>
+        <span id="version" class="muted small"></span>
+      </div>
+      <nav id="tabs" role="tablist">
+        <button role="tab" data-tab="schedule" aria-selected="true">Schedule</button>
+        <button role="tab" data-tab="queue" aria-selected="false">Queue <span id="queue-badge" class="badge" hidden></span></button>
+        <button role="tab" data-tab="templates" aria-selected="false">Templates</button>
+        <button role="tab" data-tab="stats" aria-selected="false">Stats</button>
+        <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+      </nav>
+      <div class="chips" id="status-chips"></div>
+      <div id="who" class="who" hidden>
+        <span id="who-name" class="small"></span>
+        <button id="signout" class="small">Sign out</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- SCHEDULE -->
+      <section id="tab-schedule" class="tab">
+        <div id="due" class="due" hidden>
+          <h2 class="due-title">Coming up from your templates <span class="muted small">(the next 7 days)</span></h2>
+          <div id="due-list" class="due-list"></div>
+          <p id="due-skipped" class="muted small" hidden>Not this week: <span id="due-skipped-list"></span> (click to bring one back)</p>
+        </div>
+
+        <div class="uploadbar">
+          <input id="file-input" type="file" multiple hidden accept=".jpg,.jpeg,.png,.webp,.gif,.mp4,.mov,.m4v,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime" />
+          <button id="upload-btn" class="primary">⬆ Add images or videos</button>
+          <button id="text-only">✎ Text-only post</button>
+          <button id="use-template">📋 Use a template</button>
+          <span class="muted">or drop files anywhere on this page</span>
+        </div>
+        <p id="library-msg" class="muted" aria-live="polite"></p>
+        <div id="upload-progress" class="progress" hidden><div id="upload-bar"></div></div>
+
+        <div class="split">
+          <div>
+            <div id="grid" class="grid" aria-label="Images and videos"></div>
+            <p id="grid-empty" class="empty" hidden>Add your first image or video, or drop files here.</p>
+          </div>
+
+          <aside id="compose" class="compose" hidden>
+            <p id="from-template" class="muted small" hidden>From the template <strong id="from-template-name"></strong>. <button type="button" class="link" id="from-template-clear">Don't link it</button></p>
+            <div id="image-block">
+              <img id="compose-img" alt="" />
+              <div class="row between">
+                <p id="compose-name" class="muted small"></p>
+                <button id="remove-image" type="button" class="link">Post without it</button>
+              </div>
+            </div>
+            <p id="textonly-note" class="muted small" hidden>This post has no image or video. Click one on the left to add it.</p>
+
+            <label class="field">
+              <span id="brief-label">What should the post be about? <em class="muted">(optional, for Claude)</em></span>
+              <input id="brief" type="text" placeholder="e.g. Photo from our 1920 census project, invite people to help transcribe" />
+            </label>
+            <div class="row">
+              <button id="draft-btn" type="button">✨ Draft with Claude</button>
+              <span id="draft-msg" class="muted small"></span>
+            </div>
+            <div id="options" class="options" hidden></div>
+
+            <label class="field" id="title-field" hidden>
+              <span id="title-label">Title</span>
+              <input id="title" type="text" />
+              <small id="title-hint" class="muted"></small>
+            </label>
+
+            <label class="field">
+              <span>Post text</span>
+              <textarea id="text" rows="6" placeholder="Write the post, or draft it with Claude…"></textarea>
+            </label>
+            <div id="counters" class="counters"></div>
+
+            <div id="alt-group">
+              <label class="field">
+                <span>Alt text <em class="muted">(describes the image for screen readers)</em></span>
+                <textarea id="alt" rows="2"></textarea>
+              </label>
+              <div class="row">
+                <button id="alt-btn" type="button">✨ Suggest alt text</button>
+              </div>
+            </div>
+
+            <fieldset class="field">
+              <legend>Post to</legend>
+              <div id="account-checks"></div>
+            </fieldset>
+
+            <label class="field">
+              <span>Date and time <em class="muted" id="tz"></em></span>
+              <input id="when" type="datetime-local" />
+            </label>
+            <div class="row wrap">
+              <button type="button" data-quick="60">In 1 hour</button>
+              <button type="button" data-quick="tomorrow9">Tomorrow 9:00</button>
+              <button type="button" data-quick="tomorrow17">Tomorrow 17:00</button>
+            </div>
+
+            <div class="row">
+              <button id="schedule-btn" class="primary big">Schedule post</button>
+              <span id="schedule-msg" class="small"></span>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- QUEUE -->
+      <section id="tab-queue" class="tab" hidden>
+        <div class="row end">
+          <button id="wiki-recent">Wiki table rows (last 7 days)</button>
+          <a class="button" href="/api/export/published" download>⬇ Published posts (CSV, with each platform's post ID)</a>
+        </div>
+        <div id="queue"></div>
+      </section>
+
+      <!-- STATS -->
+      <section id="tab-stats" class="tab" hidden>
+        <div class="row wrap between">
+          <label class="inline">Posted in the last
+            <select id="stats-days">
+              <option value="7">7 days</option>
+              <option value="30" selected>30 days</option>
+              <option value="90">90 days</option>
+              <option value="365">year</option>
+            </select>
+          </label>
+          <div class="row wrap">
+            <button id="stats-refresh">Refresh numbers now</button>
+            <label class="button" for="stats-import">Import TikTok file…</label>
+            <input id="stats-import" type="file" accept=".csv,text/csv" hidden>
+            <button id="stats-archive" title="The month before last, as one row per day per channel">⬇ Export month (CSV)</button>
+          </div>
+        </div>
+        <p class="muted" id="stats-note"></p>
+        <div id="stats-problems"></div>
+        <div id="stats"></div>
+      </section>
+
+      <!-- TEMPLATES -->
+      <section id="tab-templates" class="tab" hidden>
+        <div class="tpl-layout">
+          <div>
+            <div class="row between">
+              <h2 class="tpl-heading">Templates</h2>
+              <button id="tpl-new" class="primary">New template</button>
+            </div>
+            <p class="muted small">Wording for posts that come round again. Use one from the Schedule tab, or from "Coming up" there.</p>
+            <div id="tpl-list"></div>
+          </div>
+
+          <form id="tpl-form" class="card" hidden>
+            <h2 id="tpl-form-title">Template</h2>
+            <label class="field"><span>Name</span><input id="tpl-name" type="text" maxlength="80" required /></label>
+            <label class="field">
+              <span>Post text</span>
+              <textarea id="tpl-body" rows="12" required></textarea>
+              <small class="muted">Put <code>{{like this}}</code> where something changes each time. <code>{{name=default}}</code> pre-fills it, <code>{{name?}}</code> may be left blank, and <code>{{name|upper}}</code> makes it CAPITALS.</small>
+              <small id="tpl-blanks" class="muted"></small>
+            </label>
+            <label class="field"><span>Title <em class="muted">(only for places that have one, such as Reddit)</em></span><input id="tpl-title" type="text" maxlength="300" /></label>
+
+            <fieldset class="field">
+              <legend>When it goes out <em class="muted">(your own time zone)</em></legend>
+              <div id="tpl-rules"></div>
+              <button type="button" id="tpl-add-rule">+ Add a day</button>
+              <small class="muted">Each line puts this template in "Coming up" on that day. Leave it empty for something with no regular day.</small>
+            </fieldset>
+
+            <fieldset class="field">
+              <legend>Usually posted to</legend>
+              <div id="tpl-accounts"></div>
+              <small class="muted">Leave all unticked to keep whatever you last chose.</small>
+            </fieldset>
+
+            <fieldset class="field">
+              <legend>For the wiki table <em class="muted">(optional)</em></legend>
+              <label class="field"><span>Subject cell</span><textarea id="tpl-wiki-subject" rows="4" spellcheck="false" placeholder="{{Tag Link|One_Name _Studies}} [[Project:{{surname}}|{{surname}}]]"></textarea>
+                <small class="muted">The wiki markup for the row's second column. Use the same <code>{{blanks}}</code> as the post text, and add others (an image name, a profile id) that you'll be asked for when you copy the row.</small></label>
+              <div class="row wrap">
+                <label class="check"><input id="tpl-wiki-bold" type="checkbox" /><span>Bold (the table's header style)</span></label>
+                <label class="field"><span>Row color</span><input id="tpl-wiki-style" type="text" placeholder="background:#F59122;" /></label>
+                <label class="field"><span>YouTube playlist</span><input id="tpl-wiki-playlist" type="text" placeholder="SaturdayRoundup" /></label>
+              </div>
+            </fieldset>
+
+            <label class="check"><input id="tpl-active" type="checkbox" checked /><span>In use <em class="muted">(untick to hide it from "Coming up" without deleting it)</em></span></label>
+
+            <p id="tpl-msg" class="small"></p>
+            <div class="row">
+              <button type="submit" class="primary" id="tpl-save">Save</button>
+              <button type="button" id="tpl-duplicate">Make a copy</button>
+              <button type="button" id="tpl-delete" class="danger">Delete</button>
+              <button type="button" id="tpl-cancel">Close</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section id="tab-settings" class="tab" hidden>
+        <div class="cards">
+          <div class="card">
+            <h2>Accounts</h2>
+            <div id="accounts"></div>
+          </div>
+
+          <div class="card">
+            <h2>Connect platforms</h2>
+            <p class="muted small">Facebook, Instagram, Threads, LinkedIn, X, YouTube, TikTok and Reddit sign in through the platform itself. Open one, save the developer-app details you create on that platform, then press Connect. The setup steps for each are in docs/SETUP.md.</p>
+            <div id="connectors"></div>
+          </div>
+
+          <div class="card">
+            <h2>Add by hand</h2>
+            <p class="muted small">For Bluesky, Mastodon, manual reminders (such as the YouTube Community tab) and a test account.</p>
+            <form id="account-form" autocomplete="off">
+              <label class="field"><span>Type</span><select id="acc-kind"></select></label>
+              <label class="field"><span>Name shown in this app</span><input id="acc-label" type="text" placeholder="e.g. WikiTree on Bluesky" /></label>
+              <div id="acc-fields"></div>
+              <div class="row">
+                <button class="primary" type="submit">Test &amp; add</button>
+                <span id="acc-msg" class="small"></span>
+              </div>
+            </form>
+          </div>
+
+          <div class="card">
+            <h2>Image host</h2>
+            <p class="muted small">Instagram, Threads and TikTok photos only accept an image from a public web address. The app uploads each image to your bucket for the moment it's needed, then deletes it. Any S3-compatible store works; Cloudflare R2's free tier is plenty.</p>
+            <label class="field"><span>Endpoint</span><input id="host-endpoint" type="url" placeholder="https://&lt;account-id&gt;.r2.cloudflarestorage.com" /></label>
+            <label class="field"><span>Bucket</span><input id="host-bucket" type="text" /></label>
+            <label class="field"><span>Public address of the bucket</span><input id="host-public" type="url" placeholder="https://media.example.com" /><small class="muted">Where the bucket's files can be fetched from by anyone (an R2 public bucket address or custom domain).</small></label>
+            <label class="field"><span>Access key ID</span><input id="host-key" type="text" autocomplete="off" /></label>
+            <label class="field"><span>Secret access key <em class="muted" id="host-secret-state"></em></span><input id="host-secret" type="password" autocomplete="off" /></label>
+            <label class="field"><span>Region</span><input id="host-region" type="text" placeholder="auto" /><small class="muted">Use "auto" for Cloudflare R2.</small></label>
+            <div class="row">
+              <button id="host-save" class="primary">Save</button>
+              <button id="host-test" type="button">Test</button>
+              <span id="host-msg" class="small"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Claude</h2>
+            <label class="field">
+              <span>Anthropic API key <em class="muted" id="key-state"></em></span>
+              <input id="set-key" type="password" autocomplete="off" placeholder="sk-ant-…" />
+              <small class="muted">Stored only on this computer. Get one at console.anthropic.com (billed separately from a Claude subscription). You can also set ANTHROPIC_API_KEY in your environment.</small>
+            </label>
+            <label class="field">
+              <span>Model</span>
+              <input id="set-model" type="text" />
+            </label>
+            <label class="field">
+              <span>Style guide <em class="muted">(how Claude should write for you)</em></span>
+              <textarea id="set-style" rows="8"></textarea>
+            </label>
+          </div>
+
+          <div class="card team-only" hidden>
+            <h2>Team</h2>
+            <p class="muted small">Only people listed here can sign in (with the Google account for that email). Check a new person against the <a href="https://www.wikitree.com/wiki/Help:WikiTree_Team" target="_blank" rel="noreferrer">WikiTree Team list</a> first. Members schedule and edit posts; administrators also manage accounts, settings and this list.</p>
+            <div id="team"></div>
+            <form id="team-form" class="row">
+              <input id="team-email" type="email" placeholder="email@example.com" required aria-label="Email address" />
+              <input id="team-name" type="text" placeholder="Name (optional)" aria-label="Name" />
+              <select id="team-role" aria-label="Role"><option value="member">Member</option><option value="admin">Administrator</option></select>
+              <button class="primary">Add person</button>
+            </form>
+            <p id="team-msg" class="small"></p>
+          </div>
+
+          <div class="card team-only" hidden>
+            <h2>Backups and disk</h2>
+            <p id="backup-state" class="small"></p>
+            <p id="disk-state" class="muted small"></p>
+            <p id="memory-state" class="muted small"></p>
+            <div class="row">
+              <button id="backup-now">Back up now</button>
+              <span id="backup-msg" class="small"></span>
+            </div>
+          </div>
+
+          <div class="card admin-only" hidden>
+            <h2>Recent activity</h2>
+            <p class="muted small">Who signed in, scheduled, edited or changed settings. Newest first.</p>
+            <div id="activity" class="activity"></div>
+          </div>
+
+          <div class="card">
+            <h2>Scheduling</h2>
+            <label class="check">
+              <input id="set-awake" type="checkbox" />
+              <span>Keep this Mac awake while the app is running <em class="muted">(caffeinate)</em></span>
+            </label>
+            <p class="muted small">Stops idle sleep, and system sleep while plugged in. The screen can still turn off. A closed laptop lid on battery will still sleep.</p>
+            <label class="field">
+              <span>If the app wasn't running at post time, still post if it's less than this many minutes late</span>
+              <input id="set-grace" type="number" min="0" max="1440" />
+              <small class="muted">Anything later is marked "Missed" so you can decide, rather than posting something stale.</small>
+            </label>
+          </div>
+        </div>
+        <div class="row">
+          <button id="settings-save" class="primary">Save settings</button>
+          <span id="settings-msg" class="small"></span>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="edit-dialog">
+      <form method="dialog" id="edit-form">
+        <h2>Edit the shared text and time</h2>
+        <p class="muted small">This changes the text shared by every channel that hasn't customised its own. Use a channel's own Edit button to change just that channel.</p>
+        <label class="field" id="edit-title-field" hidden><span>Title</span><input id="edit-title" type="text" /></label>
+        <label class="field"><span>Post text</span><textarea id="edit-text" rows="6"></textarea></label>
+        <label class="field" id="edit-alt-field"><span>Alt text</span><textarea id="edit-alt" rows="2"></textarea></label>
+        <label class="field"><span>Date and time</span><input id="edit-when" type="datetime-local" /></label>
+        <p id="edit-msg" class="small"></p>
+        <div class="row end">
+          <button type="button" id="edit-cancel">Cancel</button>
+          <button type="submit" class="primary" id="edit-save">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="wiki-dialog">
+      <form method="dialog" id="wiki-form">
+        <h2 id="wiki-title">Wiki table rows</h2>
+        <p class="muted small">A row of the table on the social media posts page, ready to paste: the day, the subject, a link per platform (an empty cell where the post didn't go), and the YouTube and G2G cell. You can edit the text below before copying.</p>
+        <div id="wiki-blanks"></div>
+        <label class="field"><span>Wiki markup</span><textarea id="wiki-text" rows="14" spellcheck="false"></textarea></label>
+        <p id="wiki-missing" class="small err"></p>
+        <div class="row end">
+          <button type="button" id="wiki-copy">Copy</button>
+          <button type="button" id="wiki-close" class="primary">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="fill-dialog">
+      <form method="dialog" id="fill-form">
+        <h2 id="fill-title">Use a template</h2>
+        <label class="field" id="fill-pick-row"><span>Template</span><select id="fill-select"></select></label>
+        <p class="muted small" id="fill-when"></p>
+        <div id="fill-fields"></div>
+        <label class="field"><span>Preview</span><textarea id="fill-preview" rows="9" readonly></textarea></label>
+        <p id="fill-msg" class="small"></p>
+        <div class="row end">
+          <button type="button" id="fill-cancel">Cancel</button>
+          <button type="submit" class="primary" id="fill-use">Use this text</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="channel-dialog">
+      <form method="dialog" id="channel-form">
+        <h2 id="channel-title">Edit for this channel</h2>
+        <p class="muted small" id="channel-note"></p>
+
+        <label class="check" id="channel-shared-row">
+          <input type="checkbox" id="channel-use-shared" />
+          <span>Use the same text as the other channels</span>
+        </label>
+        <label class="field">
+          <span>Text for this channel</span>
+          <textarea id="channel-text" rows="7"></textarea>
+          <small id="channel-count" class="muted"></small>
+        </label>
+
+        <label class="field" id="channel-title-field" hidden>
+          <span id="channel-title-label">Title</span>
+          <input id="channel-title-input" type="text" />
+        </label>
+
+        <label class="check" id="channel-nomedia-row" hidden style="margin-top:14px">
+          <input type="checkbox" id="channel-nomedia" />
+          <span id="channel-nomedia-label">Post this channel without the image</span>
+        </label>
+        <small class="muted" id="channel-nomedia-why"></small>
+
+        <p id="channel-msg" class="small"></p>
+        <div class="row end">
+          <button type="button" id="channel-cancel">Cancel</button>
+          <button type="submit" class="primary" id="channel-save">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="connect-dialog">
+      <h2 id="connect-title">Choose accounts to add</h2>
+      <div id="connect-list"></div>
+      <div id="connect-results"></div>
+      <div class="row end">
+        <button type="button" id="connect-close">Close</button>
+        <button type="button" class="primary" id="connect-add">Add selected</button>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

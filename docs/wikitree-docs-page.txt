@@ -1,0 +1,135 @@
+'''Purpose:''' how WikiTree's social media posts are scheduled, how to get access, and how to keep it running if the usual person can't. Nothing secret belongs on this page: passwords, tokens and backup passphrases live in [PASSWORD MANAGER NAME].
+
+== In one minute ==
+
+WikiTree's social posts are scheduled with the ''Social Scheduler'', a small web app that runs on a server (Fly.io) and is open all day at '''https://wikitree-social-scheduler.fly.dev'''. You sign in with your @wikitree.com Google account, add an image or video, write the text, choose a date and time, and tick the channels. Different channels can have different wording (for example a guest's @tag only on X) or skip the image.
+
+* '''Facebook and Mastodon hold their own schedule.''' Those posts go out even if the server is briefly down.
+* '''Bluesky, Instagram, Threads and LinkedIn are posted by the server''' at the scheduled time. No one's computer needs to be on.
+* '''X, Reddit and the YouTube Community tab are done by hand.''' At the scheduled time the post appears as "Ready" in the Queue. You copy the text, download the image, open the site's new-post page, post, then click "Mark as posted".
+
+== Getting access ==
+
+# Ask a social media administrator (listed below) to add your @wikitree.com address in '''Settings > Team'''. They check you against [[Help:WikiTree_Team]] first.
+# Open the app and press '''Sign in with Google'''. Use your @wikitree.com account.
+# '''Members''' can add media, schedule, edit and manage the Queue. '''Administrators''' can also connect accounts, change settings and manage who has access.
+
+Nothing to install. When someone leaves the team, an administrator turns their access off in Settings > Team and it takes effect immediately.
+
+== Channels ==
+
+{| border="1" class="wikitable"
+! Channel !! Account !! How it goes out
+|-
+| Facebook || WikiTree; WikiTree's US Black Heritage Project; WikiTree Day & Symposium || Held by Facebook
+|-
+| Instagram || @wikitreers || The server
+|-
+| Threads || @wikitreers || The server
+|-
+| LinkedIn || WikiTree Page || The server (reconnect every ~2 months)
+|-
+| Mastodon || @wikitree on genealysis.social || Held by Mastodon
+|-
+| Bluesky || @wikitree.bsky.social || The server
+|-
+| X || WikiTreers; WTChallenge || By hand (reminder)
+|-
+| Reddit || r/wikitree || By hand (reminder)
+|-
+| YouTube || WikiTreers Community tab || By hand (reminder)
+|}
+
+TikTok is posted by hand like X and Reddit (its API needs an audit and a per-post approval screen). YouTube video goes through the app.
+
+== Where everything is kept ==
+
+(Fill these in and keep them current.)
+
+{| border="1" class="wikitable"
+! What !! Where
+|-
+| The app || https://wikitree-social-scheduler.fly.dev
+|-
+| Hosting (Fly.io) || Organization "wikitree", app "wikitree-social-scheduler"; owners: [NAMES]
+|-
+| Google sign-in || Google Cloud project [PROJECT NAME] in the wikitree.com organization; owners: [NAMES]
+|-
+| Secrets: DATA_KEY, BACKUP_PASSPHRASE, BRIEF_TOKEN, and every login || [PASSWORD MANAGER NAME] (never on this page)
+|-
+| Automatic backups || Private Cloudflare R2 bucket [BUCKET NAME], newest 14 kept; Cloudflare admins: [NAMES]
+|-
+| Meta (Facebook, Instagram) developer app || App ID 1057535013708941 (check this is the right one in the Meta dashboard); admins: [NAMES]
+|-
+| Meta Threads developer app || "WT-social-th"; admins: [NAMES]
+|-
+| LinkedIn developer app (Community Management API) || app 264112668 at https://www.linkedin.com/developers/apps/264112668; WikiTree Page ID 1360133; admins: [NAMES]
+|-
+| Cloudflare R2 image bucket (holds pictures for a few seconds while Instagram and Threads fetch them) || [BUCKET NAME]; admins: [NAMES]
+|-
+| Social media administrators || [NAMES]
+|-
+| Person who runs the server || [NAME]; backup person(s): [NAMES]
+|-
+| The program's code and setup guides || [LOCATION, e.g. the team shared drive]
+|}
+
+== Every day ==
+
+* On the '''Schedule''' tab, '''Coming up from your templates''' lists the regular posts due in the next 7 days (Question of the Week, One Name Tuesday, Connection Checkers, One Place Wednesday, Project Showcase, Member of the Week, Saturday Roundup, Genealogy Collaboration Hour, Friday Date Night, Member Q&A). Click one, fill in the blanks, add a picture, choose the channels and schedule. A tick means it is already scheduled. Anyone can edit the wording and days in the '''Templates''' tab.
+* To fill in the social media posts table on the wiki: in the '''Queue''', '''Wiki table row''' on a posted post gives the whole row (day, subject, a link per platform, empty cells where the post didn't go, and the YouTube and G2G cell); '''Wiki table rows (last 7 days)''' gives several. Fill in any blank it asks for (an image name, a profile id). Paste the link when you mark a hand-posted (X, Reddit) post as posted, or its cell stays empty.
+* Weeks differ with the WikiTree calendar: the small x on an item in '''Coming up''' skips it for that week.
+* The '''Queue''' has a download of every published post as a spreadsheet (CSV), with each platform's own post ID and link.
+* The '''Stats''' tab shows how posts did (views, reach, engagements, link clicks and so on) by channel, by regular post and one by one. The app reads them by itself a day, a week and a month after each post. '''Refresh numbers now''' does it straight away and '''Export (month)''' downloads the month before last (on 5 October, August) as one row per day per channel, then asks an administrator whether to clear that month's numbers from the app (the posts stay). Once a month, '''Import TikTok file''' takes the content download from TikTok Studio. X and Reddit report nothing.
+* Open the '''Queue'''. Anything under '''Needs attention''' is waiting for a person: a failed post, a missed post, a manual post that's ready, or a title still to be added (Reddit needs one; add it with that channel's Edit button).
+* '''Settings > Recent activity''' (administrators) shows who signed in, scheduled, edited or changed settings.
+* '''Settings > Backups and disk''' (administrators) shows the last automatic backup.
+
+== Reconnecting channels ==
+
+In '''Settings''', press '''Test''' next to each account. A failure means just that account's sign-in needs redoing. Sign-ins made through someone's personal Facebook login can stop working if that person leaves a Page, changes their password, or is removed from the Meta app.
+
+{| border="1" class="wikitable"
+! Channel !! What you need !! How
+|-
+| Mastodon || Login to the @wikitree account || On the instance: Preferences > Development > New application, scopes <code>read:accounts</code>, <code>read:statuses</code>, <code>write:media</code>, <code>write:statuses</code>. Then Settings > Add by hand > Mastodon
+|-
+| Bluesky || Login to the account || Bluesky: Settings > Privacy and security > App passwords > Add (never use the main password). Then Settings > Add by hand > Bluesky
+|-
+| Facebook and Instagram || Admin of each Page, and the Admin or Developer role on the Meta app || Settings > Connect platforms > Facebook and Instagram (add the redirect address shown there to the Meta app first). Fallback: a token from Meta's Graph API Explorer, as in the program's <code>docs/SETUP.md</code>
+|-
+| Threads || The @wikitreers profile added as a Threads Tester, and its login || Settings > Connect platforms > Threads. Fallback: Meta's User Token Generator, as in <code>docs/SETUP.md</code>
+|-
+| LinkedIn || Administrator of the WikiTree Page, and the team's LinkedIn developer app || Settings > Connect platforms > LinkedIn > Connect, about every two months (LinkedIn sign-ins last 60 days and cannot renew themselves)
+|-
+| YouTube (videos) || A Google account that manages the [https://www.youtube.com/@wikitreers @wikitreers channel] (shown in the app as "WikiTree") || Settings > Connect platforms > YouTube > Connect (setup in <code>docs/SETUP.md</code>; it uses its own Google Cloud project, "External" and in production). Google may keep API uploads private until it audits the project
+|-
+| TikTok || Nothing to connect || Just be signed in to TikTok. It is a "manual" account: at the post time the Queue has the text and video ready, and you post it in TikTok and mark it posted (pasting the link)
+|-
+| X, Reddit, YouTube Community || Nothing to connect || Just be signed in to those sites in your browser. They are "manual" accounts
+|-
+| Pictures for Instagram and Threads || Access to the Cloudflare account || Settings > Image host: endpoint, bucket, public address, and an R2 API token. Press Test
+|-
+| Draft with Claude (optional) || An Anthropic API key || Settings > Claude. Posting works without it
+|}
+
+== If the person who runs the server can't ==
+
+# Get invited to the '''wikitree''' organization on Fly.io by an owner, and get the secrets from [PASSWORD MANAGER NAME].
+# The setup, update and recovery steps are in the program's <code>docs/DEPLOY.md</code> and <code>docs/HANDOVER.md</code>.
+# If all administrators are locked out, change the <code>ADMIN_EMAILS</code> secret on Fly; the people listed become administrators on the next restart.
+# A full rebuild from a backup (new server, new disk) is in <code>DEPLOY.md</code> under "Restoring a backup". It needs the backup file from the R2 bucket and the backup passphrase.
+
+== Safety rules ==
+
+* '''Never put passwords, tokens, backup files or the backup passphrase on this page, in chat or in email.''' Use [PASSWORD MANAGER NAME].
+* '''Use your own sign-in.''' Don't share an account; the activity log records who did what.
+* '''Only one copy of the app may run.''' It is set up as a single server on purpose, because two copies would post things twice.
+* A failed post shows the platform's own error in the Queue with a Retry button. Nothing retries automatically, so nothing posts twice.
+
+== Making this resilient ==
+
+# At least two Fly.io organization owners, and at least two administrators in the app.
+# A second admin on each Meta app, each Facebook Page, the Google Cloud project and the Cloudflare account.
+# Every login and the backup passphrase in [PASSWORD MANAGER NAME].
+# Once a year, test a restore: build a throwaway server from the latest backup and press Test on each account.

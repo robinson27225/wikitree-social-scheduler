@@ -1,0 +1,12 @@
+node_modules
+data
+backups
+test
+docs
+apps-server
+.git
+*.ssbackup
+*.zip
+.env
+.env.*
+npm-debug.log

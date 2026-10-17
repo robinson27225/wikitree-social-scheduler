@@ -1,0 +1,37 @@
+# Fly.io settings. Change `app` to the name you create with `fly apps create`.
+app = "wikitree-social-scheduler"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  AUTH_MODE = "google"
+  PUBLIC_URL = "https://wikitree-social-scheduler.fly.dev"
+  GOOGLE_ALLOWED_DOMAIN = "wikitree.com"
+  PORT = "8080"
+  TZ = "America/Los_Angeles"
+  SOCIAL_SCHEDULER_DATA = "/data"
+
+[[mounts]]
+  source = "data"
+  destination = "/data"
+  initial_size = "3gb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # The scheduler runs inside the app, so the machine must never stop or sleep.
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
