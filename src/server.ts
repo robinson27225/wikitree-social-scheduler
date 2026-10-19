@@ -41,6 +41,7 @@ import { readMemory, startMemorySampler } from "./resources.ts";
 import { listColumnSettings, saveColumnSettings, wikiRows } from "./wiki.ts";
 import { archiveInfo, checkArchivableMonth, clearMonth, collectStats, importTikTokCsv, monthBeforeLast, monthLabel, monthlyCsv, statsRows } from "./stats.ts";
 import { createTemplate, deleteTemplate, getTemplate, leftoverPlaceholders, listSkips, listTemplates, seedTemplates, seedWikiSettings, setSkip, updateTemplate } from "./templates.ts";
+import { seedManualAccounts } from "./seedAccounts.ts";
 import { addUser, listUsers, removeUser, seedAdmins, updateUser } from "./users.ts";
 
 const PORT = config.port;
@@ -1093,6 +1094,7 @@ try {
 if (config.authMode === "google") seedAdmins(config.adminEmails);
 seedTemplates();
 seedWikiSettings();
+seedManualAccounts();
 pruneMissingFiles(); // after a restore, library entries whose files weren't in the backup would show as broken pictures
 
 const server = app.listen(PORT, config.bindHost, () => {
