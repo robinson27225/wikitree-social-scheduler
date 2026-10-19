@@ -711,10 +711,70 @@ function renderPost(post) {
       sharedEditable && el("button", { onclick: () => openEdit(post) }, "Edit shared text & time"),
       post.targets.some((t) => t.status === "posted") &&
         el("button", { onclick: () => openWiki({ post: post.id }) }, "Wiki table row"),
+      state.accounts.some((a) => !post.targets.some((t) => t.accountId === a.id)) &&
+        el("button", { onclick: () => openAddChannels(post) }, "Add channels"),
       post.targets.some((t) => PENDING.includes(t.status)) &&
         el("button", { class: "danger", onclick: () => removePost(post) }, "Cancel what's not posted"),
     ),
   );
+}
+
+// ---- adding channels to a post that is already scheduled
+
+let addingChannelsTo = null;
+
+/** Why an account can't take this post as it is, or null. A channel that can't take the picture or video but can take text is offered as text only. */
+function addChannelsRefusal(post, account) {
+  const kind = post.mediaKind ?? null;
+  const why = kind === null ? account.noText : kind === "image" ? account.noImage : account.noVideo;
+  const textOnly = kind !== null && Boolean(why) && !account.noText;
+  return { why: textOnly ? null : why, textOnly, reason: why };
+}
+
+function openAddChannels(post) {
+  addingChannelsTo = post;
+  const already = new Set(post.targets.map((t) => t.accountId));
+  const rows = state.accounts.filter((a) => !already.has(a.id)).map((account) => {
+    const { why, textOnly, reason } = addChannelsRefusal(post, account);
+    return el("div", { class: `acct ${why ? "disabled" : ""}`, style: "display:block" },
+      el("label", { style: "display:flex;gap:8px;align-items:center" },
+        el("input", { type: "checkbox", "data-add-account": account.id, "data-text-only": textOnly ? "1" : "", disabled: Boolean(why) }),
+        `${account.label} `,
+        el("span", { class: "muted small" }, `(${account.kindLabel})`),
+      ),
+      why && el("span", { class: "why" }, why),
+      textOnly && el("span", { class: "why" }, `${reason} It will post the text only, without the ${post.mediaKind}.`),
+    );
+  });
+  $("add-channels-list").replaceChildren(...rows);
+  $("add-channels-note").textContent = `Adds channels to "${post.text.replace(/\s+/g, " ").slice(0, 60)}", with the same text, picture and time.`
+    + (Date.parse(post.scheduledAt) < Date.now() ? " Its time has already passed, so a channel the app posts for you will need Post now, and one you post by hand shows as ready." : "");
+  say("add-channels-msg", "", true);
+  $("add-channels-dialog").showModal();
+}
+
+async function saveAddChannels(event) {
+  event.preventDefault();
+  const boxes = [...document.querySelectorAll("#add-channels-list input[data-add-account]:checked")];
+  if (!boxes.length) return say("add-channels-msg", "Tick at least one channel.", false);
+  const overrides = {};
+  for (const box of boxes) if (box.dataset.textOnly) overrides[box.dataset.addAccount] = { noMedia: true };
+  const button = $("add-channels-save");
+  button.disabled = true;
+  say("add-channels-msg", "Adding…", true);
+  try {
+    await api(`/api/posts/${addingChannelsTo.id}/channels`, {
+      method: "POST",
+      body: { accountIds: boxes.map((b) => Number(b.dataset.addAccount)), overrides },
+    });
+    $("add-channels-dialog").close();
+    toast(`Added ${boxes.length} channel${boxes.length === 1 ? "" : "s"}`);
+    loadQueue();
+  } catch (e) {
+    say("add-channels-msg", e.message, false);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 /** One channel of a post: its status, what makes it different from the shared post, and its own buttons. */
@@ -1960,6 +2020,8 @@ async function init() {
   $("connect-close").addEventListener("click", () => $("connect-dialog").close());
 
   $("channel-cancel").addEventListener("click", () => $("channel-dialog").close());
+  $("add-channels-cancel").addEventListener("click", () => $("add-channels-dialog").close());
+  $("add-channels-form").addEventListener("submit", saveAddChannels);
   $("channel-form").addEventListener("submit", saveChannel);
   $("edit-cancel").addEventListener("click", () => $("edit-dialog").close());
   $("edit-form").addEventListener("submit", async (event) => {

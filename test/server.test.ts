@@ -239,6 +239,43 @@ describe("per-channel changes to a post", () => {
     assert.equal(targetOf(post, "Mastodon stand-in").noMedia, false);
   });
 
+  it("adds a channel that was missed to a post that is already in the Queue", async () => {
+    const extra = await addAccount("dryrun", "Added later");
+    const first = await schedule([mastodon]);
+    assert.equal(first.status, 200, JSON.stringify(first.json));
+    const post = await latestPost();
+    assert.equal(post.targets.length, 1);
+    assert.equal(post.targets[0].accountId, mastodon);
+
+    const added = await call("POST", `/api/posts/${post.id}/channels`, { accountIds: [extra] });
+    assert.equal(added.status, 200, JSON.stringify(added.json));
+    const after = (await latestPost()).targets;
+    assert.deepEqual(after.map((t: any) => t.accountLabel).sort(), ["Added later", "Mastodon stand-in"]);
+    assert.equal(after.find((t: any) => t.accountLabel === "Added later").status, "scheduled");
+
+    const twice = await call("POST", `/api/posts/${post.id}/channels`, { accountIds: [extra] });
+    assert.equal(twice.status, 409, "a channel can't be added twice");
+    assert.match(twice.json.error, /already on this post/);
+    assert.equal((await call("POST", `/api/posts/${post.id}/channels`, { accountIds: [] })).status, 400);
+    assert.equal((await call("POST", "/api/posts/99999/channels", { accountIds: [extra] })).status, 404);
+  });
+
+  it("checks an added channel the same way as when scheduling (Instagram needs a picture)", async () => {
+    const db = new DatabaseSync(path.join(dataDir, "scheduler.db"));
+    const insta2 = Number(
+      db
+        .prepare("INSERT INTO accounts (kind, label, config, created_at) VALUES ('instagram', 'Instagram added later', ?, ?)")
+        .run(JSON.stringify({ igUserId: "1", pageToken: "t", username: "x" }), new Date().toISOString()).lastInsertRowid,
+    );
+    db.close();
+    await call("POST", "/api/posts", { text: "Text only", scheduledAt: later(120), accountIds: [mastodon] });
+    const post = await latestPost();
+    const refused = await call("POST", `/api/posts/${post.id}/channels`, { accountIds: [insta2] });
+    assert.equal(refused.status, 400);
+    assert.match(refused.json.error, /Instagram added later: Instagram posts need an image or a video/);
+    assert.equal((await latestPost()).targets.length, 1, "nothing was added");
+  });
+
   it("refuses to change a channel that has already been posted, but other channels stay editable", async () => {
     await schedule([mastodon, bluesky]);
     const post = await latestPost();

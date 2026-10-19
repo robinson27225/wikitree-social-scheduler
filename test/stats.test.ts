@@ -528,7 +528,7 @@ describe("the Stats routes", () => {
   it("exports the month before last as daily totals, and clears it only when told to", async () => {
     const month = monthBeforeLast();
     const [y, m] = month.split("-").map(Number);
-    const account = (await call("GET", "/api/accounts")).json.accounts?.[0]?.id ?? (await call("GET", "/api/accounts")).json[0]?.id;
+    const account = ((await call("GET", "/api/accounts")).json as { id: number; label: string }[]).find((a) => a.label === "Test channel")?.id;
     assert.ok(account, "an account exists from the earlier test");
     assert.equal((await call("GET", "/api/export/stats")).status, 404, "nothing posted that month yet");
     assert.equal((await call("GET", "/api/export/stats?month=2099-01")).status, 400, "a recent month can't be exported");

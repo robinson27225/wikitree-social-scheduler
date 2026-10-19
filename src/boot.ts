@@ -22,7 +22,16 @@ export function installationIsEmpty(dir: string): boolean {
   try {
     db = new DatabaseSync(file, { readOnly: true });
     const n = (table: string) => Number((db!.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n);
-    return n("accounts") === 0 && n("posts") === 0;
+    // Accounts the app added by itself (the manual TikTok and LinkedIn ones) aren't work worth protecting.
+    let seeded: number[] = [];
+    try {
+      const row = db.prepare("SELECT value FROM settings WHERE key = 'seeded_account_ids'").get() as { value: string } | undefined;
+      seeded = row ? (JSON.parse(row.value) as number[]) : [];
+    } catch {
+      /* no settings table or an unreadable value: nothing was seeded */
+    }
+    const accounts = (db.prepare("SELECT id FROM accounts").all() as { id: number }[]).filter((a) => !seeded.includes(a.id)).length;
+    return accounts === 0 && n("posts") === 0;
   } catch {
     return true; // a file with none of our tables is as good as empty
   } finally {

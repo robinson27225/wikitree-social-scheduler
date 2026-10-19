@@ -274,7 +274,7 @@ function postsWithTargets(whereSql = "", ...params: unknown[]) {
       targets: all(
         `SELECT t.id, t.status, t.mode, t.url, t.error, t.posted_at AS postedAt, t.external_id AS externalId, t.handed_off_at AS handedOffAt,
                 t.text_override, t.title_override, t.alt_override, t.no_media, t.thumb_first_frame,
-                a.label AS accountLabel, a.kind, a.config AS accountConfig
+                t.account_id AS accountId, a.label AS accountLabel, a.kind, a.config AS accountConfig
            FROM targets t JOIN accounts a ON a.id = t.account_id
           WHERE t.post_id = ? ORDER BY t.id`,
         post.id,
@@ -575,6 +575,45 @@ app.post("/api/posts", async (req, res) => {
   }
   audit(req, "post.schedule", `#${post.lastInsertRowid} for ${fields.scheduledAt} on ${channels.map((c) => c.account.label).join(", ")}`);
   res.json({ id: Number(post.lastInsertRowid) });
+});
+
+/** Adds more channels to a post that is already in the Queue (for a channel that was missed when it was scheduled). */
+app.post("/api/posts/:id/channels", async (req, res) => {
+  const id = Number(req.params.id);
+  const post = get("SELECT * FROM posts WHERE id = ?", id);
+  if (!post) throw new HttpError(404, "No such post.");
+  const accounts = loadAccounts(req.body?.accountIds);
+  const already = new Set(all("SELECT account_id FROM targets WHERE post_id = ?", id).map((t) => Number(t.account_id)));
+  const dup = accounts.find((a) => already.has(Number(a.id)));
+  if (dup) throw new HttpError(409, `${dup.label} is already on this post.`);
+
+  const kind = post.media_file ? mediaKindOf(post.media_file) : null;
+  const channels: Channel[] = accounts.map((account) => {
+    const override = cleanOverride(req.body?.overrides?.[account.id]);
+    if (!post.media_file) override.noMedia = false;
+    return { account: account as Channel["account"], override };
+  });
+  // The same checks as when the post was first scheduled, using the post's own text, title and picture.
+  await validatePost(
+    { text: post.text, title: post.title ?? "", altText: kind === "image" ? post.alt_text : "", scheduledAt: post.scheduled_at },
+    channels,
+    { kind, file: post.media_file ? path.join(MEDIA_DIR, post.media_file) : undefined },
+  );
+  for (const { account, override } of channels) {
+    const target = run(
+      "INSERT INTO targets (post_id, account_id, text_override, title_override, alt_override, no_media, thumb_first_frame) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      id,
+      account.id,
+      override.text,
+      override.title,
+      override.altText,
+      override.noMedia ? 1 : 0,
+      account.kind === "youtube" && override.thumbFirstFrame ? 1 : 0,
+    );
+    await placeTarget(Number(target.lastInsertRowid));
+  }
+  audit(req, "post.add-channels", `#${id}: ${channels.map((c) => c.account.label).join(", ")}`);
+  res.json({ ok: true, added: channels.length });
 });
 
 app.patch("/api/posts/:id", async (req, res) => {
@@ -1094,7 +1133,8 @@ try {
 if (config.authMode === "google") seedAdmins(config.adminEmails);
 seedTemplates();
 seedWikiSettings();
-seedManualAccounts();
+// The test suite turns this off (SEED_MANUAL_ACCOUNTS=off) so its servers start with no accounts at all.
+if (process.env.SEED_MANUAL_ACCOUNTS !== "off") seedManualAccounts();
 pruneMissingFiles(); // after a restore, library entries whose files weren't in the backup would show as broken pictures
 
 const server = app.listen(PORT, config.bindHost, () => {

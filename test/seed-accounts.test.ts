@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import net from "node:net";
 import { after, describe, it } from "node:test";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "seed-accounts-test-"));
@@ -9,6 +11,7 @@ process.env.SOCIAL_SCHEDULER_DATA = dir;
 
 const { all, get, readConfig, run, setSetting } = await import("../src/db.ts");
 const { seedManualAccounts } = await import("../src/seedAccounts.ts");
+const { installationIsEmpty } = await import("../src/boot.ts");
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -47,5 +50,51 @@ describe("the TikTok and LinkedIn accounts that appear by themselves", () => {
     add("linkedin", "WikiTree LinkedIn Page");
     assert.equal(seedManualAccounts(), 1);
     assert.deepEqual(accounts().map((r) => r.label), ["WikiTree LinkedIn Page", "WikiTree on TikTok"]);
+  });
+});
+
+describe("a new server can still be restored from a backup", () => {
+  it("counts as empty with only the accounts the app made itself, but not once the team has added one", () => {
+    run("DELETE FROM accounts");
+    setSetting("manual_accounts_seeded", "");
+    seedManualAccounts();
+    assert.equal(all("SELECT 1 FROM accounts").length, 2);
+    assert.equal(installationIsEmpty(dir), true, "the app's own accounts aren't work worth protecting");
+    add("dryrun", "A real account");
+    assert.equal(installationIsEmpty(dir), false);
+  });
+});
+
+describe("on a real start", () => {
+  it("the Post to list has TikTok and LinkedIn without anyone adding them", async () => {
+    const data = fs.mkdtempSync(path.join(os.tmpdir(), "seed-start-"));
+    const port = await new Promise<number>((resolve) => {
+      const s = net.createServer();
+      s.listen(0, "127.0.0.1", () => {
+        const p = (s.address() as net.AddressInfo).port;
+        s.close(() => resolve(p));
+      });
+    });
+    const env: NodeJS.ProcessEnv = { ...process.env, PORT: String(port), NO_OPEN: "1", SOCIAL_SCHEDULER_DATA: data };
+    delete env.SEED_MANUAL_ACCOUNTS;
+    const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: path.resolve(import.meta.dirname, ".."), env, stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("the app didn't start in time")), 20_000);
+        child.stdout!.on("data", (chunk) => {
+          if (String(chunk).includes("running at")) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+        child.on("exit", (code) => reject(new Error(`the app exited early (${code})`)));
+      });
+      const list = (await (await fetch(`http://127.0.0.1:${port}/api/accounts`)).json()) as { label: string; manual: boolean }[];
+      assert.deepEqual(list.map((a) => a.label), ["WikiTree on TikTok", "WikiTree on LinkedIn"]);
+      assert.ok(list.every((a) => a.manual));
+    } finally {
+      child.kill();
+      fs.rmSync(data, { recursive: true, force: true });
+    }
   });
 });

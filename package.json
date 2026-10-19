@@ -8,7 +8,7 @@
     "start": "tsx src/server.ts",
     "dev": "tsx watch src/server.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts",
+    "test": "SEED_MANUAL_ACCOUNTS=off tsx --test test/*.test.ts",
     "brief": "tsx scripts/brief.ts",
     "backup": "tsx scripts/backup.ts",
     "restore": "tsx scripts/restore.ts",
