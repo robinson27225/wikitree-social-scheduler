@@ -216,6 +216,29 @@ describe("per-channel changes to a post", () => {
     assert.match(refused.json.error, /Instagram stand-in: Instagram posts need an image or a video/);
   });
 
+  it("lets a channel that can't take a video post the text alone (Bluesky), but only when asked to", async () => {
+    // different bytes from the library test's clip, or the library treats it as the same file
+    const head = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.alloc(40, 7)]);
+    const clip = (await upload("bsky-clip.mp4", head)).json.item.id;
+    const db = new DatabaseSync(path.join(dataDir, "scheduler.db"));
+    const bsky = Number(
+      db
+        .prepare("INSERT INTO accounts (kind, label, config, created_at) VALUES ('bluesky', 'Real Bluesky stand-in', ?, ?)")
+        .run(JSON.stringify({ handle: "x.bsky.social", appPassword: "p" }), new Date().toISOString()).lastInsertRowid,
+    );
+    db.close();
+
+    const refused = await schedule([bsky], { libraryId: clip });
+    assert.equal(refused.status, 400);
+    assert.match(refused.json.error, /Video isn't supported for Bluesky/);
+
+    const ok = await schedule([bsky, mastodon], { libraryId: clip, overrides: { [bsky]: { noMedia: true } } });
+    assert.equal(ok.status, 200, JSON.stringify(ok.json));
+    const post = await latestPost();
+    assert.equal(targetOf(post, "Real Bluesky stand-in").noMedia, true);
+    assert.equal(targetOf(post, "Mastodon stand-in").noMedia, false);
+  });
+
   it("refuses to change a channel that has already been posted, but other channels stay editable", async () => {
     await schedule([mastodon, bluesky]);
     const post = await latestPost();

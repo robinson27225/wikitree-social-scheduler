@@ -355,6 +355,14 @@ function refusalFor(account) {
   return kind === null ? account.noText : kind === "image" ? account.noImage : account.noVideo;
 }
 
+/**
+ * A channel that can't take this picture or video but can take the text (Bluesky with a video). It isn't blocked:
+ * it simply posts the text on its own, and the person is told so.
+ */
+function textOnlyFallback(account) {
+  return currentKind() !== null && Boolean(refusalFor(account)) && !account.noText;
+}
+
 /** Channels the person never wants the image on (for example Mastodon), remembered between posts. */
 function loadNoMedia() {
   try { return new Set(JSON.parse(localStorage.getItem("noMedia") ?? "[]")); } catch { return new Set(); }
@@ -384,10 +392,11 @@ function renderAccountChecks() {
   }
   const kind = currentKind();
   for (const account of state.accounts) {
-    const why = refusalFor(account);
+    const textOnly = textOnlyFallback(account);
+    const why = textOnly ? null : refusalFor(account);
     const wanted = hadChecks ? currentlyChecked.has(account.id) : remembered.includes(account.id);
     // A channel that can post without the picture gets its own switch for that.
-    const canSkipMedia = kind !== null && !why && !account.noText;
+    const canSkipMedia = kind !== null && !why && !textOnly && !account.noText;
     box.append(
       el("div", { class: `acct ${why ? "disabled" : ""}`, style: "display:block" },
         el("label", { style: "display:flex;gap:8px;align-items:center" },
@@ -396,6 +405,7 @@ function renderAccountChecks() {
           el("span", { class: "muted small" }, `(${account.kindLabel})`),
         ),
         why && el("span", { class: "why" }, why),
+        textOnly && el("span", { class: "why" }, `${refusalFor(account)} It will post the text only, without the ${kind}.`),
         account.kind === "youtube" && kind === "video" && !why && el("label", { class: "opts" },
           el("input", {
             type: "checkbox", checked: thumbFrameIds.has(account.id), "aria-label": `Use the first frame of the video as the thumbnail on ${account.label}`,
@@ -525,7 +535,7 @@ function skippedMedia() {
   if (!state.selected?.id) return overrides;
   for (const id of checkedAccountIds()) {
     const account = state.accounts.find((a) => a.id === id);
-    if (account && noMediaIds.has(id) && !account.noText) overrides[id] = { noMedia: true };
+    if (account && (noMediaIds.has(id) || textOnlyFallback(account)) && !account.noText) overrides[id] = { noMedia: true };
     else if (account?.kind === "youtube" && state.selected.kind === "video" && thumbFrameIds.has(id)) overrides[id] = { thumbFirstFrame: true };
   }
   return overrides;

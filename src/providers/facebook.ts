@@ -196,9 +196,16 @@ export const facebook: Provider = {
       {},
       "Reading the Facebook post's counts",
     );
-    metrics.likes = Number(node.reactions?.summary?.total_count ?? node.likes?.summary?.total_count ?? 0);
-    metrics.comments = Number(node.comments?.summary?.total_count ?? 0);
-    if (!isVideo) metrics.shares = Number(node.shares?.count ?? 0);
+    // A count Facebook didn't send is left out, not turned into a zero: "0 likes" and "no answer" are different things.
+    const total = (edge: any): number | undefined => (typeof edge?.summary?.total_count === "number" ? edge.summary.total_count : undefined);
+    metrics.likes = total(node.reactions) ?? total(node.likes);
+    metrics.comments = total(node.comments);
+    if (metrics.likes === undefined && metrics.comments === undefined) {
+      notes.push("Facebook sent no reaction or comment counts for this post.");
+    } else if (!isVideo) {
+      // Facebook leaves `shares` out when there are none.
+      metrics.shares = Number(node.shares?.count ?? 0);
+    }
 
     // Views and reach come from Insights, which needs the read_insights permission.
     const names = isVideo
@@ -216,6 +223,8 @@ export const facebook: Provider = {
     metrics.viewers = num(values.post_total_media_view_unique) ?? num(values.total_video_impressions_unique);
     const clicks = values.post_clicks_by_type;
     if (clicks && typeof clicks === "object") metrics.link_clicks = Number((clicks as Record<string, number>)["link clicks"] ?? 0);
+    const empty = names.filter((n) => n in values && values[n] === undefined);
+    if (!permissionDenied && empty.length) notes.push(`Facebook returned no data for ${empty.join(", ")}.`);
     if (!permissionDenied && metrics.views === undefined && unavailable.length) {
       notes.push(`Facebook didn't give views for this post (${unavailable.join(", ")} unavailable).`);
     }

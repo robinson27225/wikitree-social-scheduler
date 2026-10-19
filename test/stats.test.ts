@@ -76,6 +76,8 @@ describe("Facebook numbers", () => {
         if (metric === "post_total_media_view_unique") return { json: { data: [{ name: metric, values: [{ value: 640 }] }] } };
         if (metric === "post_clicks_by_type") return { json: { data: [{ name: metric, values: [{ value: { "link clicks": 17, "other clicks": 4 } }] }] } };
       }
+      if (req.path === "/PAGE_BARE" && req.url.includes("reactions")) return { json: { id: "PAGE_BARE" } };
+      if (req.path === "/PAGE_BARE/insights") return { json: { data: [] } };
       if (req.path === "/PAGE_RETIRED" && req.url.includes("reactions")) return { json: { comments: { summary: { total_count: 0 } } } };
       if (req.path === "/PAGE_RETIRED/insights") return { status: 400, json: { error: { message: "(#100) metric is no longer supported", code: 100 } } };
       return { status: 404, json: { error: { message: "no route" } } };
@@ -106,6 +108,13 @@ describe("Facebook numbers", () => {
     assert.equal(stats.metrics.likes, 12);
     assert.equal(stats.metrics.views, undefined);
     assert.match(stats.notes[0], /read_insights/);
+  });
+
+  it("doesn't turn counts Facebook didn't send into zeros, and says so", async () => {
+    const stats = await facebook.fetchStats!(cfg(), target("PAGE_BARE"));
+    assert.deepEqual(stats.metrics, {}, "no likes, comments, shares, views or totals made up");
+    assert.ok(stats.notes.some((n) => /no reaction or comment counts/.test(n)));
+    assert.ok(stats.notes.some((n) => /no data for post_media_view/.test(n)));
   });
 
   it("copes with a metric Facebook has retired", async () => {
