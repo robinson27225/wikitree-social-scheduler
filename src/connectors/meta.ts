@@ -22,7 +22,7 @@ export const meta: Connector = {
   redirectHost: "localhost",
   help:
     "At developers.facebook.com create an app (type: Business), add the Facebook Login for Business or Facebook Login product, and under its settings add this address as a Valid OAuth Redirect URI. " +
-    "Keep the app in Development mode: as an admin of the Pages you don't need Meta's review. Then paste the App ID and App Secret here. " +
+    "Switch the app to Live mode once its privacy policy address, icon and category are filled in (App settings > Basic): in Development mode Facebook shows posts made by the app only to people with a role on the app, not to the public. Standard access is enough for Pages you administer, so no Meta review is needed. Then paste the App ID and App Secret here. " +
     "When Facebook asks which Pages to allow, tick all of them.",
   appFields: [
     { name: "appId", label: "App ID", type: "text", required: true },

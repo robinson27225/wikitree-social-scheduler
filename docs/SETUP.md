@@ -31,7 +31,7 @@ Some of these involve waiting on a human at the platform. Do these before anythi
 | **TikTok** | An audit of your app, before posts can be public | Days to weeks. Until then everything posts private (visible only to you). Confirmed in TikTok's documentation. |
 | **YouTube** | An audit of your API project, before uploads can be public | Days to weeks. Until then API uploads are locked private. Confirmed in Google's documentation. |
 | **LinkedIn** | Approval of the Community Management API for your app (needed to post as a Page) | Not stated by LinkedIn. Apply early. |
-| **Meta (Facebook, Instagram, Threads)** | Nothing, as long as you're an admin of the Pages and keep the app in Development mode | None |
+| **Meta (Facebook, Instagram, Threads)** | Nothing beyond being an admin of the Pages, **but the app must be in Live mode** (Development mode hides the posts from the public; see below) | None |
 | **X** | Buying API credits | Minutes |
 
 ## What each platform can and can't do
@@ -233,7 +233,13 @@ The app reads each posted post's numbers about a day, a week and a month after i
 | TikTok | Whatever is in TikTok Studio's download | Stats tab > **Import TikTok file**, with the per-video content file. Rows are matched by the video's link, or by the day it was posted. Importing again replaces earlier numbers |
 | X, Reddit, YouTube Community | None | They can't be read |
 
-The Meta app can stay in Development mode: people with a role on the app (you and the second admin) don't need Meta's review for these permissions. If a number is missing, the Stats tab says which permission to add, per channel. **Refresh numbers now** reads everything again straight away.
+The Meta app must be in **Live** mode, which needs no Meta review while the app only touches Pages its role holders administer: people with a role on the app (you and the second admin) can use these permissions on Standard access. If a number is missing, the Stats tab says which permission to add, per channel. **Refresh numbers now** reads everything again straight away.
+
+## Meta app mode: Live, not Development
+
+Keep the Meta app (Facebook and Instagram, and the Threads app) in **Live** mode. While an app is in Development mode, Facebook shows the posts it publishes only to people with a role on the app. They look normal to the team but never reach the public, and their view counts stay near zero. We lost about a week of Facebook posts to this (11 to 19 October 2026) before the Stats tab showed it.
+
+To switch: developers.facebook.com > the app > **App settings > Basic**: fill in the Privacy Policy URL, the app icon and the category, then change **App Mode** at the top from Development to Live. After any change to the app, schedule one test post and open it in a private browser window (not signed in to Facebook) to confirm it is public.
 
 ## When something goes wrong
 
