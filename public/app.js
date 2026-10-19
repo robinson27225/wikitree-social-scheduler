@@ -677,18 +677,21 @@ function manualBox(post, target) {
       early && !target.handedOff && el("button", { class: "primary", onclick: () => setScheduledThere(target, true) }, "I've scheduled it there"),
       el("button", {
         class: early && !target.handedOff ? "" : "primary",
-        onclick: async () => {
-          const link = prompt("Paste the link to your post (optional), then press OK to mark it as posted.", "");
-          if (link === null) return;
-          try {
-            await api(`/api/targets/${target.id}/mark-posted`, { method: "POST", body: { url: link.trim() || undefined } });
-            toast("Marked as posted");
-          } catch (e) { toast(e.message); }
-          loadQueue();
-        },
+        onclick: () => markPostedByHand(target),
       }, "Mark as posted"),
     ),
   );
+}
+
+/** Asks for the link (optional) and marks a hand-posted channel as posted. */
+async function markPostedByHand(target) {
+  const link = prompt("Paste the link to your post (optional), then press OK to mark it as posted.", "");
+  if (link === null) return;
+  try {
+    await api(`/api/targets/${target.id}/mark-posted`, { method: "POST", body: { url: link.trim() || undefined } });
+    toast("Marked as posted");
+  } catch (e) { toast(e.message); }
+  loadQueue();
 }
 
 function renderPost(post) {
@@ -735,7 +738,9 @@ function renderChannel(post, t) {
         t.status === "posted" && t.manualUrl && el("button", { onclick: () => editPostedLink(t) }, "Edit link"),
         t.status === "posted" && t.manualUrl && el("button", { class: "link", onclick: () => unmarkPosted(t) }, "Not posted after all"),
         byYou && el("button", { class: "link", onclick: () => setScheduledThere(t, false) }, "Not scheduled there after all"),
-        ["scheduled", "missed", "failed"].includes(t.status) &&
+        // Already scheduled by hand on the platform's own tool: the next step is to say it went out, not to prepare it again.
+        byYou && el("button", { class: "primary", onclick: () => markPostedByHand(t) }, "Mark as posted"),
+        !byYou && ["scheduled", "missed", "failed"].includes(t.status) &&
           el("button", { onclick: (e) => postNow(t, e.currentTarget) },
             t.manualUrl ? "Prepare now" : t.status === "scheduled" ? "Post now" : "Retry"),
       ),
