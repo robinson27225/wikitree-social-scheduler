@@ -54,6 +54,7 @@ export function defaultColumn(account: { kind: string; label: string }): string 
       if (/twitter|(^|\W)x(\W|$)/i.test(account.label)) return "twitter";
       if (/reddit/i.test(account.label)) return "reddit";
       if (/tiktok/i.test(account.label)) return "tiktok";
+      if (/linkedin/i.test(account.label)) return "linkedin";
       return null;
     default:
       return null;

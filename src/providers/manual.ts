@@ -29,7 +29,7 @@ export const manual: Provider = {
       required: true,
       help:
         "The Queue shows an Open button for this address. {text} and {title} are replaced with the post's text and title, so the page opens already filled in. " +
-        "X: https://x.com/intent/post?text={text}  |  Reddit: https://www.reddit.com/r/wikitree/submit?type=TEXT&title={title}&text={text}  |  YouTube Community: https://www.youtube.com/@WikiTreers/community  |  TikTok: https://www.tiktok.com/tiktokstudio/upload",
+        "X: https://x.com/intent/post?text={text}  |  Reddit: https://www.reddit.com/r/wikitree/submit?type=TEXT&title={title}&text={text}  |  YouTube Community: https://www.youtube.com/@WikiTreers/community  |  TikTok: https://www.tiktok.com/tiktokstudio/upload  |  LinkedIn: https://www.linkedin.com/company/1360133/admin/",
     },
     {
       name: "maxChars",

@@ -1235,6 +1235,31 @@ function renderProviderFields() {
   }
 }
 
+/** One-click starts for the places this app can't post to itself: they fill in the form, and you press Test & add. */
+const MANUAL_PRESETS = [
+  { name: "TikTok (by hand)", label: "WikiTree on TikTok", url: "https://www.tiktok.com/tiktokstudio/upload", maxChars: "2200" },
+  { name: "LinkedIn (by hand)", label: "WikiTree on LinkedIn", url: "https://www.linkedin.com/company/1360133/admin/", maxChars: "3000" },
+];
+
+function renderPresets() {
+  $("acc-presets").replaceChildren(
+    ...MANUAL_PRESETS.map((preset) =>
+      el("button", {
+        type: "button",
+        onclick: () => {
+          $("acc-kind").value = "manual";
+          renderProviderFields();
+          $("acc-label").value = preset.label;
+          for (const input of document.querySelectorAll("#acc-fields input")) {
+            if (input.dataset.field === "url") input.value = preset.url;
+            if (input.dataset.field === "maxChars") input.value = preset.maxChars;
+          }
+          say("acc-msg", "Check the details, then press Test & add.", true);
+        },
+      }, preset.name)),
+  );
+}
+
 async function addAccount(event) {
   event.preventDefault();
   say("acc-msg", "Checking…", true);
@@ -1959,6 +1984,7 @@ async function init() {
 
   state.providers = await api("/api/providers");
   $("acc-kind").replaceChildren(...state.providers.map((p) => el("option", { value: p.kind }, p.label)));
+  renderPresets();
   renderProviderFields();
 
   await Promise.all([refreshStatus(), refreshAccounts()]);

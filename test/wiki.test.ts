@@ -30,6 +30,7 @@ describe("which column each account's links go in", () => {
     assert.equal(defaultColumn({ kind: "manual", label: "WikiTreers on X" }), "twitter");
     assert.equal(defaultColumn({ kind: "manual", label: "WikiTree on Reddit" }), "reddit");
     assert.equal(defaultColumn({ kind: "manual", label: "WikiTree on TikTok" }), "tiktok");
+    assert.equal(defaultColumn({ kind: "manual", label: "WikiTree on LinkedIn" }), "linkedin");
     assert.equal(defaultColumn({ kind: "manual", label: "YouTube Community" }), null, "name it in Settings to put it in the YouTube column");
     assert.equal(defaultColumn({ kind: "manual", label: "Max review" }), null, "an x inside a word is not X");
   });
