@@ -48,34 +48,45 @@ async function createPost(config: Config, input: PublishInput, whenIso?: string)
     return { created, kind: "video" };
   }
 
-  const image = await prepareImage(input.mediaPath, { maxBytes: 8 * 1024 * 1024, maxEdge: 4096 });
-  body.set("source", new Blob([new Uint8Array(image.bytes)], { type: image.mime }), path.basename(input.mediaPath));
-  if (input.altText) body.set("alt_text_custom", input.altText);
+  const pictures = [{ path: input.mediaPath, altText: input.altText }, ...(input.extraImages ?? [])];
 
-  if (whenIso) {
+  if (whenIso || pictures.length > 1) {
     // A scheduled photo can't be scheduled through /photos: the Photo it makes can't say whether it has been published,
-    // so there'd be no way to tell. Facebook's documented route is to upload the photo unpublished (temporary, so an
-    // unused one is cleaned up by Facebook) and schedule a normal post that carries it. That post can be asked.
-    body.set("published", "false");
-    body.set("temporary", "true");
-    const photo = await fetchJson<Created>(`${base}/${page}/photos`, { method: "POST", body }, "Facebook photo upload");
+    // so there'd be no way to tell. Facebook's documented route is to upload each photo unpublished (temporary, so an
+    // unused one is cleaned up by Facebook) and make a normal post that carries them. That post can be asked, and it is
+    // also how a post gets several photos at once.
+    const attached: Record<string, string> = {};
+    for (const [i, picture] of pictures.entries()) {
+      const upload = new FormData();
+      upload.set("access_token", token);
+      const image = await prepareImage(picture.path, { maxBytes: 8 * 1024 * 1024, maxEdge: 4096 });
+      upload.set("source", new Blob([new Uint8Array(image.bytes)], { type: image.mime }), path.basename(picture.path));
+      if (picture.altText) upload.set("alt_text_custom", picture.altText);
+      upload.set("published", "false");
+      upload.set("temporary", "true");
+      const photo = await fetchJson<Created>(`${base}/${page}/photos`, { method: "POST", body: upload }, "Facebook photo upload");
+      attached[`attached_media[${i}]`] = JSON.stringify({ media_fbid: photo.id });
+    }
     const created = await fetchJson<Created>(
       `${base}/${page}/feed`,
       {
         method: "POST",
         body: form({
           message: input.text,
-          "attached_media[0]": JSON.stringify({ media_fbid: photo.id }),
+          ...attached,
           access_token: token,
           ...schedule,
-          unpublished_content_type: "SCHEDULED",
+          ...(whenIso ? { unpublished_content_type: "SCHEDULED" } : {}),
         }),
       },
-      "Scheduling the Facebook post",
+      whenIso ? "Scheduling the Facebook post" : "Facebook post",
     );
     return { created, kind: "post" };
   }
 
+  const image = await prepareImage(input.mediaPath, { maxBytes: 8 * 1024 * 1024, maxEdge: 4096 });
+  body.set("source", new Blob([new Uint8Array(image.bytes)], { type: image.mime }), path.basename(input.mediaPath));
+  if (input.altText) body.set("alt_text_custom", input.altText);
   body.set("caption", input.text);
   const created = await fetchJson<Created>(`${base}/${page}/photos`, { method: "POST", body }, "Facebook photo upload");
   return { created, kind: "photo" };
@@ -112,6 +123,7 @@ export const facebook: Provider = {
     return { config, detail: `Connected to the Page "${page.name}". Facebook will hold the schedule.` };
   },
 
+  maxImages: () => 10,
   textLimit: () => POST_LIMIT,
   countText: (text) => graphemeLength(text),
   accepts: () => null,

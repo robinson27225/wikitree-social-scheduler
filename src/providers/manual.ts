@@ -68,6 +68,8 @@ export const manual: Provider = {
     };
   },
 
+  // Nothing is posted by the app, so every picture is offered for download.
+  maxImages: () => 20,
   textLimit: (config) => Number(config.maxChars) || DEFAULT_LIMIT,
   countText: (text, config) => (config.countLikeX ? xLength(text) : graphemeLength(text)),
   accepts: () => null,

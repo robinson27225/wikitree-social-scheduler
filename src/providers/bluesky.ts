@@ -46,6 +46,7 @@ export const bluesky: Provider = {
     return { config: { ...config, handle }, detail: `Signed in as @${handle}` };
   },
 
+  maxImages: () => 4,
   textLimit: () => POST_LIMIT,
   countText: (text) => graphemeLength(text),
   accepts: (kind) => (kind === "video" ? "Video isn't supported for Bluesky yet." : null),
@@ -54,18 +55,15 @@ export const bluesky: Provider = {
     const agent = await login(config);
     let embed;
     if (input.mediaPath) {
-      const image = await prepareImage(input.mediaPath, IMAGE_LIMITS);
-      const upload = await agent.uploadBlob(image.bytes, { encoding: image.mime });
-      embed = {
-        $type: "app.bsky.embed.images" as const,
-        images: [
-          {
-            image: upload.data.blob,
-            alt: input.altText,
-            aspectRatio: { width: image.width, height: image.height },
-          },
-        ],
-      };
+      // The first picture, then the others: up to four in one post.
+      const pictures = [{ path: input.mediaPath, altText: input.altText }, ...(input.extraImages ?? [])];
+      const images = [];
+      for (const picture of pictures) {
+        const image = await prepareImage(picture.path, IMAGE_LIMITS);
+        const upload = await agent.uploadBlob(image.bytes, { encoding: image.mime });
+        images.push({ image: upload.data.blob, alt: picture.altText, aspectRatio: { width: image.width, height: image.height } });
+      }
+      embed = { $type: "app.bsky.embed.images" as const, images };
     }
 
     const rt = new RichText({ text: input.text });

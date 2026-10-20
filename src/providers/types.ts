@@ -27,6 +27,11 @@ export interface PublishInput {
   idempotencyKey: string;
   /** YouTube: use the first frame of the video as its thumbnail. */
   thumbnailFromVideo?: boolean;
+  /**
+   * More pictures after the first (which is `mediaPath`, with `altText`). Only ever present for a post of pictures, and
+   * already cut down to what this platform takes (see Provider.maxImages).
+   */
+  extraImages?: { path: string; altText: string }[];
 }
 
 /** Lets a provider save changed credentials (for example a refreshed token) back to its account. */
@@ -83,6 +88,9 @@ export interface Provider {
   connect(config: Config, ctx?: ProviderContext): Promise<{ config: Config; detail: string }>;
   textLimit(config: Config): number;
   countText(text: string, config: Config): number;
+
+  /** How many pictures one post can carry here. Left out means one. A post with more has the extras dropped for this channel. */
+  maxImages?(config: Config): number;
 
   /** null if this account can post that kind of media (or text only, when kind is null), else the reason it can't. */
   accepts(kind: MediaKind | null, config: Config): string | null;

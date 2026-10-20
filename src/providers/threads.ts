@@ -34,6 +34,16 @@ async function refreshToken(config: Config): Promise<Partial<Config>> {
   };
 }
 
+/** Threads takes JPEG pictures of a sensible size. */
+function toJpeg(file: string): Promise<Buffer> {
+  return sharp(file, { failOn: "none" })
+    .rotate()
+    .resize({ width: 1440, height: 1440, fit: "inside", withoutEnlargement: true })
+    .flatten({ background: "#ffffff" })
+    .jpeg({ quality: 90, mozjpeg: true })
+    .toBuffer();
+}
+
 export const threads: Provider = {
   kind: "threads",
   label: "Threads",
@@ -49,6 +59,7 @@ export const threads: Provider = {
     return { config, detail: `Connected to @${me.username}.` };
   },
 
+  maxImages: () => 20,
   textLimit: () => TEXT_LIMIT,
   countText: (text) => threadsLength(text),
   accepts: () => null,
@@ -113,13 +124,23 @@ export const threads: Provider = {
           return (await publish(container.id)).id;
         },
       );
+    } else if (input.extraImages?.length) {
+      // Several pictures make a carousel: each is its own item, then one post holds them all.
+      const items: string[] = [];
+      for (const picture of [{ path: input.mediaPath, altText: input.altText }, ...input.extraImages]) {
+        items.push(
+          await withPublicUrl({ bytes: await toJpeg(picture.path), contentType: "image/jpeg", extension: "jpg" }, async (url) => {
+            const item = await create({ media_type: "IMAGE", image_url: url, is_carousel_item: "true", alt_text: picture.altText || undefined });
+            await waitFor(item.id, 2 * 60_000);
+            return item.id;
+          }),
+        );
+      }
+      const carousel = await create({ media_type: "CAROUSEL", children: items.join(","), text: input.text });
+      await waitFor(carousel.id, 2 * 60_000);
+      postId = (await publish(carousel.id)).id;
     } else {
-      const bytes = await sharp(input.mediaPath, { failOn: "none" })
-        .rotate()
-        .resize({ width: 1440, height: 1440, fit: "inside", withoutEnlargement: true })
-        .flatten({ background: "#ffffff" })
-        .jpeg({ quality: 90, mozjpeg: true })
-        .toBuffer();
+      const bytes = await toJpeg(input.mediaPath);
       postId = await withPublicUrl({ bytes, contentType: "image/jpeg", extension: "jpg" }, async (url) => {
         const container = await create({
           media_type: "IMAGE",

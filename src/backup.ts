@@ -124,21 +124,36 @@ export async function createBackup(options: {
     const snapshot = new DatabaseSync(path.join(staging, "scheduler.db"), { readOnly: true });
     let counts: { accounts: number; posts: number };
     let pendingMedia: string[];
+    let pendingPostCount: number;
     try {
       const n = (sql: string) => Number((snapshot.prepare(sql).get() as { n: number }).n);
       counts = { accounts: n("SELECT COUNT(*) AS n FROM accounts"), posts: n("SELECT COUNT(*) AS n FROM posts") };
-      pendingMedia = (
-        snapshot
-          .prepare(
-            `SELECT DISTINCT p.media_file AS f FROM posts p JOIN targets t ON t.post_id = p.id
-              WHERE p.media_file != '' AND t.status IN ('scheduled', 'posting', 'missed', 'failed', 'ready')`,
-          )
-          .all() as { f: string }[]
-      ).map((r) => r.f);
+      // The first picture of each post that hasn't gone out, and its extra pictures too.
+      const pending = snapshot
+        .prepare(
+          `SELECT DISTINCT p.id, p.media_file AS f, p.extra_media AS extra FROM posts p JOIN targets t ON t.post_id = p.id
+            WHERE p.media_file != '' AND t.status IN ('scheduled', 'posting', 'missed', 'failed', 'ready')`,
+        )
+        .all() as { f: string; extra: string }[];
+      pendingPostCount = pending.length;
+      pendingMedia = [
+        ...new Set(
+          pending.flatMap((r) => {
+            let more: string[] = [];
+            try {
+              const list = JSON.parse(r.extra || "[]") as { file?: string }[];
+              more = Array.isArray(list) ? list.flatMap((e) => (typeof e?.file === "string" ? [e.file] : [])) : [];
+            } catch {
+              /* unreadable: just the first picture */
+            }
+            return [r.f, ...more];
+          }),
+        ),
+      ];
     } finally {
       snapshot.close();
     }
-    const pendingPosts = pendingMedia.length;
+    const pendingPosts = pendingPostCount;
 
     await fsp.mkdir(path.join(staging, "media"));
     let mediaFiles = 0;

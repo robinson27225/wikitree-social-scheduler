@@ -138,6 +138,23 @@ describe("LinkedIn posting", () => {
     assert.deepEqual(li.to("/rest/posts")[0].json().content.media, { id: "urn:li:image:IMG1", altText: "A blue banner" });
   });
 
+  it("posts several pictures as one set of images, each with its own description", async () => {
+    li.requests.length = 0;
+    await linkedin.publish(
+      config(),
+      input({ mediaPath: square, mediaKind: "image", altText: "First", extraImages: [{ path: square, altText: "Second" }] }),
+    );
+    assert.equal(li.to("/rest/images").length, 2, "each picture is uploaded");
+    const content = li.to("/rest/posts")[0].json().content;
+    assert.equal(content.media, undefined);
+    assert.deepEqual(content.multiImage, {
+      images: [
+        { id: "urn:li:image:IMG1", altText: "First" },
+        { id: "urn:li:image:IMG1", altText: "Second" },
+      ],
+    });
+  });
+
   it("uploads a video in the pieces LinkedIn asks for, hands the ETags back in order, and posts it", async () => {
     li.requests.length = 0;
     etags.length = 0;

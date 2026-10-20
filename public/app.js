@@ -13,6 +13,8 @@ const state = {
   settings: {},
   items: [], // images and videos in the media library
   selected: null, // { id, name, kind } where id is null for a text-only post
+  more: [], // library items added after the first picture of a post of pictures (each { id, name })
+  moreAlt: {}, // library id -> the description typed for that extra picture
   pendingToken: null,
   me: null, // { mode, user: { email, name, role }, csrf }
   templates: [],
@@ -175,6 +177,7 @@ async function loadLibrary() {
       state.selected = null;
       $("compose").hidden = true;
     }
+    state.more = state.more.filter((m) => data.items.some((i) => i.id === m.id));
     renderGrid();
     const videos = data.items.filter((i) => i.kind === "video").length;
     if (!state.uploading) {
@@ -253,6 +256,25 @@ async function removeFromLibrary(item) {
   }
 }
 
+/** Pictures after the first: any other picture in the library can be added while a post of pictures is being written. */
+const isExtra = (item) => state.more.some((m) => m.id === item.id);
+const canAddPicture = (item) =>
+  !$("compose").hidden && state.selected?.kind === "image" && item.kind === "image" && item.id !== state.selected.id;
+const MAX_PICTURES = 20;
+
+function toggleExtra(item) {
+  if (isExtra(item)) {
+    state.more = state.more.filter((m) => m.id !== item.id);
+    delete state.moreAlt[item.id];
+  } else if (state.more.length + 1 >= MAX_PICTURES) {
+    toast(`A post can have at most ${MAX_PICTURES} pictures.`);
+    return;
+  } else {
+    state.more.push({ id: item.id, name: item.name });
+  }
+  showComposeMode(); // redraws the grid too
+}
+
 function renderGrid() {
   const grid = $("grid");
   grid.replaceChildren();
@@ -277,6 +299,13 @@ function renderGrid() {
           el("span", { class: "name" }, item.name),
         ),
         el("button", { class: "remove", title: "Remove from the library", "aria-label": `Remove ${item.name} from the library`, onclick: () => removeFromLibrary(item) }, "✕"),
+        canAddPicture(item) && el("button", {
+          class: `addpic ${isExtra(item) ? "on" : ""}`,
+          title: isExtra(item) ? "Take this picture out of the post" : "Add this picture to the post being written",
+          "aria-label": `${isExtra(item) ? "Remove" : "Add"} ${item.name} ${isExtra(item) ? "from" : "to"} the post`,
+          "aria-pressed": String(isExtra(item)),
+          onclick: () => toggleExtra(item),
+        }, isExtra(item) ? `✓ ${state.more.findIndex((m) => m.id === item.id) + 2}` : "+ add"),
       ),
     );
   }
@@ -287,6 +316,7 @@ const currentKind = () => state.selected?.kind ?? null;
 
 /** Switches the compose panel between image, video and text-only, keeping what's been typed. */
 function showComposeMode() {
+  renderGrid(); // the "+ add" buttons on the library pictures depend on what is being composed
   const kind = currentKind();
   const hasMedia = kind !== null;
   $("image-block").hidden = !hasMedia;
@@ -300,7 +330,35 @@ function showComposeMode() {
     $("compose-img").src = `/api/library/${state.selected.id}/thumb`; // small thumbnail is plenty
     $("compose-name").textContent = state.selected.name;
   }
+  renderMorePictures();
   renderAccountChecks();
+}
+
+/** The strip of pictures after the first, each with its own description. */
+function renderMorePictures() {
+  const box = $("more-pictures");
+  const any = state.selected?.kind === "image";
+  box.hidden = !any;
+  $("more-pictures-hint").textContent = state.more.length
+    ? `${state.more.length + 1} pictures in this post, in this order. Each needs its own description.`
+    : "To post several pictures, press “+ add” on more pictures in the library on the left.";
+  $("alt-label").textContent = state.more.length ? "Alt text for the first picture " : "Alt text ";
+  box.querySelector("ul").replaceChildren(
+    ...state.more.map((m, i) =>
+      el("li", {},
+        el("img", { src: `/api/library/${m.id}/thumb`, alt: "" }),
+        el("div", {},
+          el("div", { class: "muted small" }, `Picture ${i + 2}: ${m.name}`),
+          el("input", {
+            type: "text", placeholder: "Describe this picture for screen readers", value: state.moreAlt[m.id] ?? "",
+            "aria-label": `Description of picture ${i + 2}`,
+            oninput: (e) => { state.moreAlt[m.id] = e.target.value; },
+          }),
+        ),
+        el("button", { type: "button", class: "link", title: "Take this picture out of the post", onclick: () => toggleExtra(m) }, "✕"),
+      ),
+    ),
+  );
 }
 
 function resetComposeExtras() {
@@ -316,6 +374,8 @@ function startTextOnly() {
   const keepText = $("compose").hidden ? "" : $("text").value;
   const keepTitle = $("compose").hidden ? "" : $("title").value;
   state.selected = { id: null, name: "", kind: null };
+  state.more = [];
+  state.moreAlt = {};
   renderGrid();
   $("compose").hidden = false;
   $("text").value = keepText;
@@ -333,6 +393,8 @@ function selectItem(item) {
   const keepText = adding ? $("text").value : "";
   const keepTitle = adding ? $("title").value : "";
   state.selected = item;
+  state.more = [];
+  state.moreAlt = {};
   renderGrid();
   $("compose").hidden = false;
   $("text").value = keepText;
@@ -405,6 +467,8 @@ function renderAccountChecks() {
           el("span", { class: "muted small" }, `(${account.kindLabel})`),
         ),
         why && el("span", { class: "why" }, why),
+        !why && !textOnly && kind === "image" && state.more.length + 1 > account.maxImages &&
+          el("span", { class: "why" }, `Takes ${account.maxImages} picture${account.maxImages === 1 ? "" : "s"}: it will post the first ${account.maxImages}.`),
         textOnly && el("span", { class: "why" }, `${refusalFor(account)} It will post the text only, without the ${kind}.`),
         account.kind === "youtube" && kind === "video" && !why && el("label", { class: "opts" },
           el("input", {
@@ -559,6 +623,7 @@ async function schedule() {
         text: $("text").value,
         title: $("title-field").hidden ? "" : $("title").value,
         altText: state.selected.kind === "image" ? $("alt").value : "",
+        moreImages: state.more.map((m) => ({ libraryId: m.id, altText: state.moreAlt[m.id] ?? "" })),
         scheduledAt: new Date(when).toISOString(),
         accountIds: checkedAccountIds(),
         overrides: skippedMedia(),
@@ -672,7 +737,13 @@ function manualBox(post, target) {
         class: "button",
         href: `/api/media/${encodeURIComponent(post.mediaFile)}?download=1`,
         download: "",
-      }, `Download the ${post.mediaKind ?? "file"}`),
+      }, post.extraMedia?.length ? "Download picture 1" : `Download the ${post.mediaKind ?? "file"}`),
+      // A hand-posted channel gets every picture, one download each.
+      hasFile && (post.extraMedia ?? []).map((m, i) => el("a", {
+        class: "button",
+        href: `/api/media/${encodeURIComponent(m.file)}?download=1`,
+        download: "",
+      }, `Download picture ${i + 2}`)),
       target.manualUrl && el("a", { class: "button", href: target.manualUrl, target: "_blank", rel: "noreferrer" }, "Open the page"),
       early && !target.handedOff && el("button", { class: "primary", onclick: () => setScheduledThere(target, true) }, "I've scheduled it there"),
       el("button", {
@@ -697,7 +768,10 @@ async function markPostedByHand(target) {
 function renderPost(post) {
   const sharedEditable = post.targets.every((t) => t.status !== "posted" && t.status !== "posting");
   const thumb = post.mediaUrl
-    ? el("div", { style: "position:relative" }, el("img", { src: post.mediaUrl, alt: "" }), post.mediaKind === "video" && el("span", { class: "vbadge" }, "▶"))
+    ? el("div", { class: "thumbwrap", style: "position:relative" },
+        el("img", { src: post.mediaUrl, alt: "" }),
+        post.mediaKind === "video" && el("span", { class: "vbadge" }, "▶"),
+        post.extraMedia?.length > 0 && el("span", { class: "more", title: `${post.extraMedia.length + 1} pictures` }, `+${post.extraMedia.length}`))
     : el("div", { class: "noimg" }, "Text only");
   return el("div", { class: "post" },
     thumb,

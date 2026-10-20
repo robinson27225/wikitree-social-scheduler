@@ -12,6 +12,25 @@ import { HttpError } from "./util.ts";
 
 /** Posts made from a library item remember it as `library:<id>` in posts.source_path. */
 export const sourceRef = (id: number) => `library:${id}`;
+
+/** A post of pictures can carry this many (Threads and LinkedIn take 20, the most of any platform here). */
+export const MAX_IMAGES_PER_POST = 20;
+
+/** The pictures after the first, as stored on a post: our own copy's file name, the library item it came from, and its description. */
+export interface ExtraImage {
+  file: string;
+  source: string;
+  alt: string;
+}
+
+export function extraImagesOf(raw: unknown): ExtraImage[] {
+  try {
+    const list = JSON.parse(String(raw ?? "[]"));
+    return Array.isArray(list) ? list.filter((e) => e && typeof e.file === "string").map((e) => ({ file: e.file, source: String(e.source ?? ""), alt: String(e.alt ?? "") })) : [];
+  } catch {
+    return [];
+  }
+}
 export const libraryIdOf = (sourcePath: string): number | null => {
   const m = /^library:(\d+)$/.exec(sourcePath);
   return m ? Number(m[1]) : null;
@@ -151,11 +170,14 @@ function itemOf(row: Record<string, any>, statuses?: Set<string>): LibraryItem {
 /** Everything in the library, newest first, with whether it has been used. */
 export function listLibrary(): LibraryItem[] {
   const used = new Map<number, Set<string>>();
-  for (const row of all("SELECT p.source_path, t.status FROM posts p JOIN targets t ON t.post_id = p.id WHERE p.source_path LIKE 'library:%'")) {
-    const id = libraryIdOf(String(row.source_path));
-    if (id === null) continue;
-    if (!used.has(id)) used.set(id, new Set());
-    used.get(id)!.add(String(row.status));
+  for (const row of all("SELECT p.source_path, p.extra_media, t.status FROM posts p JOIN targets t ON t.post_id = p.id WHERE p.source_path LIKE 'library:%'")) {
+    // The first picture and every extra one count as used by this post.
+    for (const source of [String(row.source_path), ...extraImagesOf(row.extra_media).map((e) => e.source)]) {
+      const id = libraryIdOf(source);
+      if (id === null) continue;
+      if (!used.has(id)) used.set(id, new Set());
+      used.get(id)!.add(String(row.status));
+    }
   }
   return all("SELECT * FROM library ORDER BY id DESC").map((row) => itemOf(row, used.get(Number(row.id))));
 }

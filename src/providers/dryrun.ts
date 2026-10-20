@@ -46,6 +46,7 @@ export const dryrun: Provider = {
     return { config, detail: "Test account ready. Posts are only written to data/dryrun.log" };
   },
 
+  maxImages: () => 10,
   textLimit: () => 280,
   countText: (text) => graphemeLength(text),
   accepts: () => null,
@@ -57,6 +58,8 @@ export const dryrun: Provider = {
       text: input.text,
       alt: input.altText,
       image: input.mediaPath ? path.basename(input.mediaPath) : null,
+      // The pictures after the first, each with its own description.
+      more: (input.extraImages ?? []).map((e) => ({ image: path.basename(e.path), alt: e.altText })),
       key: input.idempotencyKey,
     });
     await fs.appendFile(LOG(), line + "\n");

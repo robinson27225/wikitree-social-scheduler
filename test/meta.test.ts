@@ -160,6 +160,34 @@ describe("Facebook Page", () => {
     assert.deepEqual(await facebook.checkOnServer!(config(), { id: "unreadable1", kind: "post" }, ""), { state: "gone" });
   });
 
+  it("posts several photos at once: each unpublished, then one post carrying them all", async () => {
+    fb.requests.length = 0;
+    await facebook.publish(
+      config(),
+      input({ mediaPath: square, mediaKind: "image", altText: "First", extraImages: [{ path: wide, altText: "Second" }], text: "Two photos" }),
+    );
+    const uploads = fb.to("/PAGE/photos");
+    assert.equal(uploads.length, 2);
+    for (const u of uploads) assert.match(u.text(), /name="published"\r\n\r\nfalse/, "photos are uploaded unpublished");
+    assert.match(uploads[0].text(), /First/);
+    assert.match(uploads[1].text(), /Second/);
+    const post = fb.to("/PAGE/feed")[0].form();
+    assert.equal(post.get("message"), "Two photos");
+    assert.equal(post.get("attached_media[0]"), JSON.stringify({ media_fbid: "photo1" }));
+    assert.equal(post.get("attached_media[1]"), JSON.stringify({ media_fbid: "photo1" }));
+    assert.equal(post.get("published"), null, "published straight away, not scheduled");
+  });
+
+  it("schedules several photos too", async () => {
+    fb.requests.length = 0;
+    const when = new Date(Date.now() + 3_600_000).toISOString();
+    await facebook.scheduleOnServer!(config(), input({ mediaPath: square, mediaKind: "image", extraImages: [{ path: wide, altText: "" }] }), when);
+    const post = fb.to("/PAGE/feed")[0].form();
+    assert.ok(post.get("attached_media[1]"));
+    assert.equal(post.get("published"), "false");
+    assert.equal(post.get("scheduled_publish_time"), String(Math.floor(Date.parse(when) / 1000)));
+  });
+
   it("reports Facebook's own error message when a post is refused", async () => {
     const bad = await startFake(() => ({ status: 400, json: { error: { message: "(#200) Requires pages_manage_posts permission" } } }));
     try {
@@ -218,6 +246,24 @@ describe("Instagram", () => {
     assert.equal(instagram.accepts("image", config()), null);
     assert.equal(await instagram.validateMedia!(square, "image", config()), null);
     assert.match((await instagram.validateMedia!(wide, "image", config()))!, /between 4:5 and 1\.91:1.*3000x1000/);
+  });
+
+  it("makes a carousel of several pictures, with the caption on the post and not on the pictures", async () => {
+    graph.requests.length = 0;
+    await instagram.publish(
+      config(),
+      input({ mediaPath: square, mediaKind: "image", altText: "One", extraImages: [{ path: square, altText: "Two" }], text: "Caption for all" }),
+    );
+    const creates = graph.to("/IG/media").filter((r) => r.path === "/IG/media").map((r) => r.form()); // (to() matches by prefix)
+    assert.equal(creates.length, 3, "two items, then the carousel");
+    assert.equal(creates[0].get("is_carousel_item"), "true");
+    assert.equal(creates[0].get("caption"), null);
+    assert.equal(creates[0].get("alt_text"), "One");
+    assert.equal(creates[1].get("alt_text"), "Two");
+    assert.equal(creates[2].get("media_type"), "CAROUSEL");
+    assert.equal(creates[2].get("children"), "container1,container1");
+    assert.equal(creates[2].get("caption"), "Caption for all");
+    assert.equal(objects.size, 0, "every hosted copy is deleted afterwards");
   });
 
   it("converts to JPEG, hosts it publicly just for the moment, posts it, and cleans up", async () => {
@@ -321,6 +367,22 @@ describe("Threads", () => {
     assert.equal(create.get("media_type"), "IMAGE");
     assert.match(create.get("image_url")!, /^https:\/\/media\.example\.com\/social-scheduler\/.+\.jpg$/);
     assert.equal(create.get("alt_text"), "Alt");
+    assert.equal(objects.size, 0);
+  });
+
+  it("makes a carousel of several pictures", async () => {
+    api.requests.length = 0;
+    await threads.publish(
+      config(),
+      input({ mediaPath: square, mediaKind: "image", altText: "One", extraImages: [{ path: square, altText: "Two" }, { path: square, altText: "" }], text: "Three pictures" }),
+    );
+    const creates = api.to("/U1/threads").filter((r) => r.path === "/U1/threads").map((r) => r.form());
+    assert.equal(creates.length, 4, "three items, then the carousel");
+    assert.equal(creates[0].get("is_carousel_item"), "true");
+    assert.equal(creates[1].get("alt_text"), "Two");
+    assert.equal(creates[3].get("media_type"), "CAROUSEL");
+    assert.equal(creates[3].get("children"), "cont1,cont1,cont1");
+    assert.equal(creates[3].get("text"), "Three pictures");
     assert.equal(objects.size, 0);
   });
 

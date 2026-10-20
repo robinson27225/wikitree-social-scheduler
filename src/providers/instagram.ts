@@ -55,6 +55,7 @@ export const instagram: Provider = {
     return { config, detail: `Connected to @${me.username}. Images go through your image host.` };
   },
 
+  maxImages: () => 10,
   textLimit: () => CAPTION_LIMIT,
   countText: (text) => graphemeLength(text),
 
@@ -77,10 +78,11 @@ export const instagram: Provider = {
     const ig = String(config.igUserId);
     const token = String(config.pageToken);
 
-    const create = (params: Record<string, string | undefined>) =>
+    // The caption belongs on the post, not on the separate pictures of a carousel.
+    const create = (params: Record<string, string | undefined>, caption: string | null = input.text) =>
       fetchJson<{ id: string }>(
         `${base}/${ig}/media`,
-        { method: "POST", body: form({ ...params, caption: input.text, access_token: token }) },
+        { method: "POST", body: form({ ...params, caption, access_token: token }) },
         "Instagram media upload",
       );
 
@@ -96,6 +98,23 @@ export const instagram: Provider = {
           return container.id;
         },
       );
+    } else if (input.extraImages?.length) {
+      // Several pictures make a carousel: each picture becomes its own item, then one post holds them all.
+      const pictures = [{ path: input.mediaPath, altText: input.altText }, ...input.extraImages];
+      const items: string[] = [];
+      for (const picture of pictures) {
+        const bytes = await toJpeg(picture.path);
+        items.push(
+          await withPublicUrl({ bytes, contentType: "image/jpeg", extension: "jpg" }, async (url) => {
+            const item = await create({ image_url: url, is_carousel_item: "true", alt_text: picture.altText || undefined }, null);
+            await waitForContainer(config, item.id, 2 * 60_000);
+            return item.id;
+          }),
+        );
+      }
+      const carousel = await create({ media_type: "CAROUSEL", children: items.join(",") });
+      await waitForContainer(config, carousel.id, 2 * 60_000);
+      containerId = carousel.id;
     } else {
       const bytes = await toJpeg(input.mediaPath);
       containerId = await withPublicUrl({ bytes, contentType: "image/jpeg", extension: "jpg" }, async (url) => {

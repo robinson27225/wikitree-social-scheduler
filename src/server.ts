@@ -25,7 +25,7 @@ import {
 } from "./db.ts";
 import { buildBrief } from "./brief.ts";
 import { thumbnail } from "./images.ts";
-import { deleteFromLibrary, libraryFile, libraryIdOf, listLibrary, pruneMissingFiles, saveUpload, sourceRef, thumbKey } from "./library.ts";
+import { deleteFromLibrary, extraImagesOf, libraryFile, libraryIdOf, listLibrary, MAX_IMAGES_PER_POST, pruneMissingFiles, saveUpload, sourceRef, thumbKey } from "./library.ts";
 import { mediaKindOf, type MediaKind } from "./media.ts";
 import { getHostConfig, publicHostSettings, saveHostConfig, testHost } from "./publicHost.ts";
 import { isKeepingAwake, setKeepAwake } from "./keepawake.ts";
@@ -130,6 +130,8 @@ function accountRow(row: Record<string, any>) {
     titleLimit: provider.titleLimit?.(config) ?? null,
     manual: Boolean(provider.manual),
     heldByPlatform: Boolean(provider.supportsServerSchedule?.(config)),
+    // How many pictures one post here can carry; a post with more has the extras left off this channel.
+    maxImages: provider.maxImages?.(config) ?? 1,
   };
 }
 
@@ -200,7 +202,7 @@ interface Channel {
 async function validatePost(
   fields: { text: unknown; title: unknown; altText: unknown; scheduledAt: unknown },
   channels: Channel[],
-  media: { kind: MediaKind | null; file?: string },
+  media: { kind: MediaKind | null; file?: string; extraFiles?: string[] },
 ) {
   const { text, title, altText, scheduledAt } = fields;
   if (typeof text !== "string" || text.trim() === "") throw new HttpError(400, "Write some text for the post.");
@@ -243,8 +245,13 @@ async function validatePost(
     }
 
     if (media.file && effectiveKind && provider.validateMedia) {
-      const problem = await provider.validateMedia(media.file, effectiveKind, config);
-      if (problem) throw new HttpError(400, `${account.label}: ${problem}`);
+      // Every picture the channel will actually post: the first, and as many more as it takes.
+      const cap = provider.maxImages?.(config) ?? 1;
+      const files = [media.file, ...(effectiveKind === "image" ? (media.extraFiles ?? []).slice(0, Math.max(cap - 1, 0)) : [])];
+      for (const file of files) {
+        const problem = await provider.validateMedia(file, effectiveKind, config);
+        if (problem) throw new HttpError(400, `${account.label}: ${problem}${files.length > 1 ? ` (${path.basename(file)})` : ""}`);
+      }
     }
   }
   return {
@@ -268,6 +275,13 @@ function postsWithTargets(whereSql = "", ...params: unknown[]) {
       mediaUrl: post.media_file ? `/api/media-thumb/${encodeURIComponent(post.media_file)}` : null,
       mediaFile: post.media_file || null,
       mediaKind: postKind,
+      // The pictures after the first, in order, each with its own description.
+      extraMedia: extraImagesOf(post.extra_media).map((e) => ({
+        file: e.file,
+        url: `/api/media-thumb/${encodeURIComponent(e.file)}`,
+        altText: e.alt,
+        libraryId: libraryIdOf(e.source),
+      })),
       libraryId: libraryIdOf(String(post.source_path)),
       templateId: post.template_id ?? null,
       scheduledAt: post.scheduled_at,
@@ -503,7 +517,14 @@ app.get("/api/media/:file", async (req, res) => {
   res.set("Cache-Control", "private, max-age=3600");
   if (req.query.download === "1") {
     const post = get("SELECT source_path FROM posts WHERE media_file = ?", name);
-    const id = post ? libraryIdOf(String(post.source_path)) : null;
+    let id = post ? libraryIdOf(String(post.source_path)) : null;
+    if (!post) {
+      // Not a post's first picture: it may be one of the extra pictures of a post.
+      for (const row of all("SELECT extra_media FROM posts WHERE extra_media LIKE ?", `%${name}%`)) {
+        const extra = extraImagesOf(row.extra_media).find((e) => e.file === name);
+        if (extra) id = libraryIdOf(extra.source);
+      }
+    }
     const original = id === null ? undefined : get("SELECT name FROM library WHERE id = ?", id)?.name;
     res.download(file, original ? String(original) : name);
     return;
@@ -517,12 +538,41 @@ app.get("/api/posts", (_req, res) => {
   res.json(postsWithTargets());
 });
 
+/** Keeps the post's own copy of a library file, so renaming, moving or deleting the original later can't break a scheduled post. */
+async function keepCopy(source: string): Promise<string> {
+  const name = `${crypto.randomUUID()}${path.extname(source).toLowerCase()}`;
+  // A second name for the same bytes costs no extra space (a copy is the fallback).
+  await fs.link(source, path.join(MEDIA_DIR, name)).catch(() => fs.copyFile(source, path.join(MEDIA_DIR, name), fsConstants.COPYFILE_FICLONE));
+  return name;
+}
+
+/** The pictures after the first, checked: only after a first picture, only pictures, no repeats, and not too many. */
+function checkMoreImages(raw: unknown, first: { id: number | null; kind: MediaKind | null }): { item: ReturnType<typeof libraryFile>; alt: string }[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new HttpError(400, "The extra pictures must be a list.");
+  if (raw.length === 0) return [];
+  if (first.kind !== "image") throw new HttpError(400, "Extra pictures can only go with a first picture. A video or a text-only post can't have them.");
+  if (1 + raw.length > MAX_IMAGES_PER_POST) throw new HttpError(400, `A post can have at most ${MAX_IMAGES_PER_POST} pictures.`);
+  const seen = new Set<number>(first.id === null ? [] : [first.id]);
+  return raw.map((entry) => {
+    const id = Number(entry?.libraryId);
+    if (seen.has(id)) throw new HttpError(400, "The same picture is in this post twice.");
+    seen.add(id);
+    const item = libraryFile(id);
+    if (mediaKindOf(item.file) !== "image") throw new HttpError(400, `${item.row.name}: only pictures can be added after the first.`);
+    const alt = typeof entry?.altText === "string" ? entry.altText.trim() : "";
+    if (alt.length > 1500) throw new HttpError(400, "Alt text is limited to 1500 characters.");
+    return { item, alt };
+  });
+}
+
 app.post("/api/posts", async (req, res) => {
-  const { libraryId, text, title = "", altText = "", scheduledAt, accountIds, overrides, templateId, templateValues } = req.body ?? {};
+  const { libraryId, text, title = "", altText = "", scheduledAt, accountIds, overrides, templateId, templateValues, moreImages } = req.body ?? {};
   // No libraryId means a text-only post. It's stored with an empty media_file and source_path.
   const libraryItem = libraryId ? libraryFile(Number(libraryId)) : null;
   const source = libraryItem?.file ?? "";
   const kind = source ? mediaKindOf(source) : null;
+  const more = checkMoreImages(moreImages, { id: libraryItem ? Number(libraryItem.row.id) : null, kind });
   const accounts = loadAccounts(accountIds);
   // Each channel may skip the media or carry its own text/title/alt text. A post with no media has nothing to skip.
   const channels: Channel[] = accounts.map((account) => {
@@ -533,23 +583,21 @@ app.post("/api/posts", async (req, res) => {
   const fields = await validatePost(
     { text, title, altText: kind === "image" ? altText : "", scheduledAt },
     channels,
-    { kind, file: source || undefined },
+    { kind, file: source || undefined, extraFiles: more.map((m) => m.item.file) },
   );
   if (Date.parse(fields.scheduledAt) < Date.now() - 60_000) {
     throw new HttpError(400, "That time has already passed. Pick a time in the future.");
   }
 
-  // Keep our own copy so renaming or moving the original later can't break a scheduled post.
-  let mediaFile = "";
-  if (source) {
-    mediaFile = `${crypto.randomUUID()}${path.extname(source).toLowerCase()}`;
-    // A second name for the same bytes costs no extra space (a copy is the fallback), so the post keeps
-    // its file even if the library item is deleted later.
-    await fs.link(source, path.join(MEDIA_DIR, mediaFile)).catch(() => fs.copyFile(source, path.join(MEDIA_DIR, mediaFile), fsConstants.COPYFILE_FICLONE));
+  // Keep our own copy of each picture, so deleting the library item later can't break a scheduled post.
+  const mediaFile = source ? await keepCopy(source) : "";
+  const extraMedia = [];
+  for (const m of more) {
+    extraMedia.push({ file: await keepCopy(m.item.file), source: sourceRef(Number(m.item.row.id)), alt: m.alt });
   }
 
   const post = run(
-    "INSERT INTO posts (text, title, alt_text, media_file, source_path, scheduled_at, created_at, template_id, template_values) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO posts (text, title, alt_text, media_file, source_path, scheduled_at, created_at, template_id, template_values, extra_media) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     fields.text,
     fields.title,
     fields.altText,
@@ -559,6 +607,7 @@ app.post("/api/posts", async (req, res) => {
     new Date().toISOString(),
     templateId && getTemplate(Number(templateId)) ? Number(templateId) : null,
     storedTemplateValues(templateValues),
+    JSON.stringify(extraMedia),
   );
   for (const { account, override } of channels) {
     const target = run(
@@ -597,7 +646,11 @@ app.post("/api/posts/:id/channels", async (req, res) => {
   await validatePost(
     { text: post.text, title: post.title ?? "", altText: kind === "image" ? post.alt_text : "", scheduledAt: post.scheduled_at },
     channels,
-    { kind, file: post.media_file ? path.join(MEDIA_DIR, post.media_file) : undefined },
+    {
+      kind,
+      file: post.media_file ? path.join(MEDIA_DIR, post.media_file) : undefined,
+      extraFiles: extraImagesOf(post.extra_media).map((e) => path.join(MEDIA_DIR, e.file)),
+    },
   );
   for (const { account, override } of channels) {
     const target = run(

@@ -111,6 +111,28 @@ describe("mastodon provider (against a fake server)", () => {
     );
   });
 
+  it("uploads every picture with its own description and attaches them all to one post", async () => {
+    seen.length = 0;
+    await mastodon.publish(
+      { instance, accessToken: "good-token", maxChars: 1000 },
+      {
+        text: "Two pictures",
+        altText: "First one",
+        mediaPath: image,
+        title: "",
+        mediaKind: "image",
+        idempotencyKey: "key-multi",
+        extraImages: [{ path: image, altText: "Second one" }],
+      },
+    );
+    const uploads = seen.filter((s) => s.url === "/api/v2/media");
+    assert.equal(uploads.length, 2);
+    assert.ok(uploads[0].body.toString("latin1").includes("First one"));
+    assert.ok(uploads[1].body.toString("latin1").includes("Second one"));
+    const sent = JSON.parse(seen.filter((s) => s.url === "/api/v1/statuses")[0].body.toString());
+    assert.equal(sent.media_ids.length, 2);
+  });
+
   it("uploads with alt text, waits for processing, then posts once with an idempotency key", async () => {
     seen.length = 0;
     const result = await mastodon.publish(

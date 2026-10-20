@@ -218,6 +218,7 @@ export const linkedin: Provider = {
     };
   },
 
+  maxImages: () => 20,
   textLimit: () => TEXT_LIMIT,
   countText: (text) => graphemeLength(text),
   accepts: () => null,
@@ -236,6 +237,15 @@ export const linkedin: Provider = {
     const content: Record<string, unknown> = {};
     if (input.mediaPath && input.mediaKind === "video") {
       content.media = { id: await uploadVideo(config, input.mediaPath), title: (input.title || input.text.split("\n")[0]).slice(0, 200) };
+    } else if (input.mediaPath && input.extraImages?.length) {
+      // Several pictures go in one post as a set of images.
+      const images: { id: string; altText?: string }[] = [];
+      for (const picture of [{ path: input.mediaPath, altText: input.altText }, ...input.extraImages]) {
+        const image: { id: string; altText?: string } = { id: await uploadImage(config, picture.path) };
+        if (picture.altText) image.altText = picture.altText.slice(0, 4000);
+        images.push(image);
+      }
+      content.multiImage = { images };
     } else if (input.mediaPath) {
       const media: Record<string, string> = { id: await uploadImage(config, input.mediaPath) };
       if (input.altText) media.altText = input.altText.slice(0, 4000);

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { extraImagesOf } from "./library.ts";
 import { all, get, getSetting, MEDIA_DIR, readConfig, run, writeConfig } from "./db.ts";
 import { mediaKindOf } from "./media.ts";
 import { providerFor } from "./providers/index.ts";
@@ -42,7 +43,7 @@ function loadTarget(targetId: number) {
   return get(
     `SELECT t.id, t.status, t.mode, t.remote, t.account_id,
             t.text_override, t.title_override, t.alt_override, t.no_media, t.thumb_first_frame,
-            p.text, p.title, p.alt_text, p.media_file, p.scheduled_at,
+            p.text, p.title, p.alt_text, p.media_file, p.extra_media, p.scheduled_at,
             a.kind, a.label
        FROM targets t
        JOIN posts p ON p.id = t.post_id
@@ -62,12 +63,21 @@ function inputFor(row: Record<string, any>, idempotencyKey: string): PublishInpu
   // An empty media_file means a text-only post, and so does a channel set to skip the media.
   const mediaFile = row.no_media ? "" : row.media_file;
   const mediaPath = mediaFile ? path.join(MEDIA_DIR, mediaFile) : null;
+  const mediaKind = mediaPath ? mediaKindOf(mediaPath) : null;
+  // More pictures after the first, as many as this platform takes (the rest are left off this channel).
+  let extraImages: PublishInput["extraImages"];
+  if (mediaKind === "image") {
+    const room = Math.max((providerFor(row.kind).maxImages?.(currentConfig(row.account_id)) ?? 1) - 1, 0);
+    const extras = extraImagesOf(row.extra_media).slice(0, room);
+    if (extras.length) extraImages = extras.map((e) => ({ path: path.join(MEDIA_DIR, e.file), altText: e.alt }));
+  }
   return {
     text: row.text_override ?? row.text,
     title: row.title_override ?? row.title ?? "",
     altText: row.alt_override ?? row.alt_text,
     mediaPath,
-    mediaKind: mediaPath ? mediaKindOf(mediaPath) : null,
+    mediaKind,
+    ...(extraImages ? { extraImages } : {}),
     idempotencyKey,
     thumbnailFromVideo: Boolean(row.thumb_first_frame),
   };

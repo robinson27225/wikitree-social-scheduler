@@ -71,6 +71,10 @@
                 <button id="remove-image" type="button" class="link">Post without it</button>
               </div>
             </div>
+            <div id="more-pictures" hidden>
+              <p id="more-pictures-hint" class="muted small"></p>
+              <ul class="more-list"></ul>
+            </div>
             <p id="textonly-note" class="muted small" hidden>This post has no image or video. Click one on the left to add it.</p>
 
             <label class="field">
@@ -97,7 +101,7 @@
 
             <div id="alt-group">
               <label class="field">
-                <span>Alt text <em class="muted">(describes the image for screen readers)</em></span>
+                <span><span id="alt-label">Alt text </span><em class="muted">(describes the image for screen readers)</em></span>
                 <textarea id="alt" rows="2"></textarea>
               </label>
               <div class="row">

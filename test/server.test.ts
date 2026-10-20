@@ -353,6 +353,86 @@ describe("a platform-held schedule follows per-channel edits", () => {
   });
 });
 
+describe("posts with several pictures", () => {
+  const colours = ["#aa3333", "#33aa33", "#3333aa", "#aaaa33", "#aa33aa", "#33aaaa", "#884400", "#004488", "#448800", "#880044", "#008844", "#440088"];
+  const ids: number[] = [];
+  let channel: number;
+
+  before(async () => {
+    channel = await addAccount("dryrun", "Several pictures channel");
+    for (const [i, colour] of colours.entries()) {
+      const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: colour } }).png().toBuffer();
+      const r = await upload(`multi-${i}.png`, png);
+      assert.equal(r.status, 201, JSON.stringify(r.json));
+      ids.push(r.json.item.id);
+    }
+  });
+
+  const post = (libraryId: number, more: unknown, extra: Record<string, unknown> = {}) =>
+    call("POST", "/api/posts", { libraryId, text: "Several pictures", altText: "First", scheduledAt: later(120), accountIds: [channel], moreImages: more, ...extra });
+
+  it("keeps every picture, each with its own description, and marks them all as used", async () => {
+    const r = await post(ids[0], [{ libraryId: ids[1], altText: "Second" }, { libraryId: ids[2], altText: "" }]);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    const p = await latestPost();
+    assert.equal(p.extraMedia.length, 2);
+    assert.deepEqual(p.extraMedia.map((m: any) => m.altText), ["Second", ""]);
+    assert.deepEqual(p.extraMedia.map((m: any) => m.libraryId), [ids[1], ids[2]]);
+    const library = (await call("GET", "/api/library")).json.items as any[];
+    for (const id of [ids[0], ids[1], ids[2]]) assert.equal(library.find((i) => i.id === id).state, "scheduled", "every picture counts as used");
+    assert.equal(library.find((i) => i.id === ids[3]).state, "new");
+
+    // the post keeps its own copies: removing a library picture changes nothing
+    await call("DELETE", `/api/library/${ids[1]}`, {});
+    const after = await latestPost();
+    assert.equal((await fetch(`${base}${after.extraMedia[0].url}`)).status, 200);
+  });
+
+  it("posts them all, and cuts the list to what a channel takes", async () => {
+    const r = await post(ids[3], ids.slice(4, 12).map((id, i) => ({ libraryId: id, altText: `Picture ${i + 2}` })).concat([{ libraryId: ids[0], altText: "again" }, { libraryId: ids[2], altText: "again" }]));
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    const p = await latestPost();
+    assert.equal(p.extraMedia.length, 10, "all kept on the post");
+    await call("POST", `/api/targets/${p.targets[0].id}/post-now`, {});
+    const line = logLines().at(-1);
+    assert.equal(line.more.length, 9, "the test account takes 10 pictures, so 9 after the first");
+    assert.equal(line.more[0].alt, "Picture 2");
+  });
+
+  it("a channel set to leave the pictures off posts none of them", async () => {
+    await post(ids[3], [{ libraryId: ids[5], altText: "" }], { overrides: { [channel]: { noMedia: true } } });
+    const p = await latestPost();
+    await call("POST", `/api/targets/${p.targets[0].id}/post-now`, {});
+    const line = logLines().at(-1);
+    assert.equal(line.image, null);
+    assert.deepEqual(line.more, []);
+  });
+
+  it("refuses extra pictures that make no sense", async () => {
+    const withVideo = await upload("multi-clip.mp4", Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.alloc(40, 9)]));
+    const videoId = withVideo.json.item.id;
+    assert.match((await post(videoId, [{ libraryId: ids[4] }])).json.error, /can only go with a first picture/);
+    assert.match((await post(ids[4], [{ libraryId: videoId }])).json.error, /only pictures can be added/);
+    assert.match((await post(ids[4], [{ libraryId: ids[4] }])).json.error, /twice/);
+    assert.match((await post(ids[4], [{ libraryId: ids[5] }, { libraryId: ids[5] }])).json.error, /twice/);
+    assert.match((await post(ids[4], Array.from({ length: 20 }, () => ({ libraryId: ids[6] })))).json.error, /at most 20/);
+    assert.equal((await post(ids[4], [{ libraryId: 999999 }])).status, 404);
+    assert.equal((await call("POST", "/api/posts", { text: "Text only", scheduledAt: later(120), accountIds: [channel], moreImages: [{ libraryId: ids[4] }] })).status, 400);
+  });
+
+  it("adding a channel later gives it the same pictures", async () => {
+    await post(ids[7], [{ libraryId: ids[8], altText: "Second" }]);
+    const p = await latestPost();
+    const added = await addAccount("dryrun", "Added with pictures");
+    assert.equal((await call("POST", `/api/posts/${p.id}/channels`, { accountIds: [added] })).status, 200);
+    const target = (await latestPost()).targets.find((t: any) => t.accountLabel === "Added with pictures");
+    await call("POST", `/api/targets/${target.id}/post-now`, {});
+    const line = logLines().at(-1);
+    assert.equal(line.more.length, 1);
+    assert.equal(line.more[0].alt, "Second");
+  });
+});
+
 describe("the media library", () => {
   const png = () => sharp({ create: { width: 64, height: 48, channels: 3, background: "#aa3311" } }).png().toBuffer();
 

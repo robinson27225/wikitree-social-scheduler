@@ -72,10 +72,10 @@ async function uploadMedia(config: Config, input: PublishInput & { mediaPath: st
   return media.id;
 }
 
-function statusBody(config: Config, input: PublishInput, mediaId: string | undefined, extra: object = {}) {
+function statusBody(config: Config, input: PublishInput, mediaIds: string[], extra: object = {}) {
   return JSON.stringify({
     status: input.text,
-    ...(mediaId ? { media_ids: [mediaId] } : {}),
+    ...(mediaIds.length ? { media_ids: mediaIds } : {}),
     visibility: config.visibility || "public",
     ...extra,
   });
@@ -84,9 +84,14 @@ function statusBody(config: Config, input: PublishInput, mediaId: string | undef
 /** Newlines and surrounding space can differ between what we sent and what Mastodon stores. */
 const normalize = (text: string) => text.replace(/\r\n/g, "\n").trim();
 
-/** Uploads the image if the post has one. */
-async function maybeUpload(config: Config, input: PublishInput): Promise<string | undefined> {
-  return input.mediaPath ? uploadMedia(config, { ...input, mediaPath: input.mediaPath }) : undefined;
+/** Uploads the picture or video (and any extra pictures) if the post has them. Returns Mastodon's ids, in order. */
+async function maybeUpload(config: Config, input: PublishInput): Promise<string[]> {
+  if (!input.mediaPath) return [];
+  const ids = [await uploadMedia(config, { ...input, mediaPath: input.mediaPath })];
+  for (const extra of input.extraImages ?? []) {
+    ids.push(await uploadMedia(config, { ...input, mediaPath: extra.path, mediaKind: "image", altText: extra.altText }));
+  }
+  return ids;
 }
 
 async function accountId(config: Config): Promise<string> {
@@ -132,12 +137,14 @@ export const mastodon: Provider = {
     let maxChars = DEFAULT_CHARS;
     let imageBytes = DEFAULT_IMAGE_BYTES;
     let videoBytes = DEFAULT_VIDEO_BYTES;
+    let maxMedia = 4;
     const instance = await api(config, "/api/v2/instance");
     if (instance.ok) {
       const info = (await instance.json()) as any;
       maxChars = info?.configuration?.statuses?.max_characters ?? maxChars;
       imageBytes = info?.configuration?.media_attachments?.image_size_limit ?? imageBytes;
       videoBytes = info?.configuration?.media_attachments?.video_size_limit ?? videoBytes;
+      maxMedia = info?.configuration?.statuses?.max_media_attachments ?? maxMedia;
     }
 
     const nativeSchedule = config.nativeSchedule !== false && config.nativeSchedule !== "false";
@@ -151,13 +158,14 @@ export const mastodon: Provider = {
       }
     }
     return {
-      config: { ...config, instance: baseUrl(config), accountId: account.id, maxChars, imageBytes, videoBytes, nativeSchedule },
+      config: { ...config, instance: baseUrl(config), accountId: account.id, maxChars, imageBytes, videoBytes, maxMedia, nativeSchedule },
       detail:
         `Signed in as @${account.acct} (limit ${maxChars} characters)` +
         (nativeSchedule ? ". Mastodon will hold the schedule." : ". This app will post at the scheduled time."),
     };
   },
 
+  maxImages: (config) => Number(config.maxMedia) || 4,
   textLimit: (config) => Number(config.maxChars) || DEFAULT_CHARS,
   countText: (text) => mastodonLength(text),
   accepts: () => null,
@@ -171,11 +179,11 @@ export const mastodon: Provider = {
   },
 
   async publish(config, input) {
-    const mediaId = await maybeUpload(config, input);
+    const mediaIds = await maybeUpload(config, input);
     const status = await api(config, "/api/v1/statuses", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": input.idempotencyKey },
-      body: statusBody(config, input, mediaId),
+      body: statusBody(config, input, mediaIds),
     });
     if (!status.ok) throw await failure(status, "post");
     const posted = (await status.json()) as { url: string; id?: string };
@@ -185,11 +193,11 @@ export const mastodon: Provider = {
   supportsServerSchedule: (config) => config.nativeSchedule !== false && config.nativeSchedule !== "false",
 
   async scheduleOnServer(config, input, whenIso) {
-    const mediaId = await maybeUpload(config, input);
+    const mediaIds = await maybeUpload(config, input);
     const res = await api(config, "/api/v1/statuses", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": input.idempotencyKey },
-      body: statusBody(config, input, mediaId, { scheduled_at: whenIso }),
+      body: statusBody(config, input, mediaIds, { scheduled_at: whenIso }),
     });
     if (!res.ok) throw await failure(res, "scheduling");
     const scheduled = (await res.json()) as { id: string; scheduled_at?: string };
@@ -197,9 +205,9 @@ export const mastodon: Provider = {
     if (!scheduled.scheduled_at) {
       throw new Error("Mastodon published the post immediately instead of scheduling it. Check the account.");
     }
-    // Remember how to recognise the published post: by its image if it has one, otherwise by its text.
+    // Remember how to recognise the published post: by its first image if it has one, otherwise by its text.
     const ref: RemoteRef = { id: scheduled.id };
-    if (mediaId) ref.mediaId = mediaId;
+    if (mediaIds.length) ref.mediaId = mediaIds[0];
     else ref.text = input.text;
     return ref;
   },

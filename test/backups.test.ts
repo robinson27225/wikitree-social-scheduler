@@ -236,6 +236,36 @@ async function startFakeS3() {
   };
 }
 
+describe("a backup of a post with several pictures", () => {
+  it("carries every picture of a post that hasn't gone out", async () => {
+    const dir = path.join(root, "hostMulti");
+    const app = await startApp(dir, { DATA_KEY: keyA.toString("base64") });
+    try {
+      const ids: number[] = [];
+      for (const colour of ["#aa3333", "#33aa33", "#3333aa"]) {
+        const png = await sharp({ create: { width: 40, height: 40, channels: 3, background: colour } }).png().toBuffer();
+        const up = await fetch(`${app.base}/api/library?name=${colour.slice(1)}.png`, { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: png as BodyInit });
+        ids.push(((await up.json()) as any).item.id);
+      }
+      const account = await call(app.base, "POST", "/api/accounts", { kind: "dryrun", label: "Multi", config: {} });
+      const post = await call(app.base, "POST", "/api/posts", {
+        libraryId: ids[0],
+        moreImages: [{ libraryId: ids[1], altText: "two" }, { libraryId: ids[2], altText: "three" }],
+        text: "Three pictures",
+        altText: "one",
+        scheduledAt: later(600),
+        accountIds: [account.json.id],
+      });
+      assert.equal(post.status, 200, JSON.stringify(post.json));
+    } finally {
+      await app.stop();
+    }
+    const made = await createBackup({ dataDir: dir, passphrase: PASS, backupDir: path.join(root, "made-multi"), dataKey: keyA });
+    assert.equal(made.pendingPosts, 1, "one post");
+    assert.equal(made.mediaFiles, 3, "but all three of its pictures");
+  });
+});
+
 describe("nightly backups to a private bucket, and alerts", () => {
   let s3: Awaited<ReturnType<typeof startFakeS3>>;
   let app: App;
