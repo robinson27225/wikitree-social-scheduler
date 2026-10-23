@@ -147,6 +147,9 @@ function renderChips() {
         state.status.keepAwake ? "Mac kept awake" : "Mac may sleep"),
     );
   }
+  if (state.status.schedulerStalled) {
+    chips.append(el("span", { class: "chip off", title: "Nothing will be posted until the app is restarted" }, "Posting has stopped!"));
+  }
   chips.append(
     el("button", {
       type: "button", class: `chip ${state.status.claudeConfigured ? "" : "off"}`, onclick: openClaudeKey,
@@ -905,7 +908,7 @@ function renderPost(post) {
         el("img", { src: post.mediaUrl, alt: "" }),
         post.mediaKind === "video" && el("span", { class: "vbadge" }, "▶"),
         post.extraMedia?.length > 0 && el("span", { class: "more", title: `${post.extraMedia.length + 1} pictures` }, `+${post.extraMedia.length}`))
-    : el("div", { class: "noimg" }, "Text only");
+    : el("div", { class: "noimg" }, post.mediaRemoved ? "Picture removed" : "Text only");
   return el("div", { class: "post" },
     thumb,
     el("div", {},
@@ -2178,14 +2181,22 @@ async function deleteTemplate() {
 
 // ------------------------------------------------------------------ wiring
 
+/** The one-off message the server left for this page (a sign-in problem and the like), read once and cleared. */
+function takeFlash() {
+  const match = document.cookie.split("; ").find((c) => c.startsWith("flash_error="));
+  if (!match) return "";
+  document.cookie = "flash_error=; Path=/; Max-Age=0";
+  try { return decodeURIComponent(match.slice("flash_error=".length)); } catch { return ""; }
+}
+
 async function init() {
   const params0 = new URLSearchParams(location.search);
+  const flash = takeFlash();
   const me = await fetch("/auth/me", { cache: "no-store" });
   if (me.status === 401) {
     state.me = { mode: "google", user: null, csrf: "" };
-    const why = params0.get("loginError");
-    if (why) history.replaceState(null, "", location.pathname);
-    showLogin(why ?? "");
+    if (params0.has("loginError")) history.replaceState(null, "", location.pathname);
+    showLogin(flash);
     return;
   }
   state.me = await me.json();
@@ -2199,8 +2210,7 @@ async function init() {
   }
   // The Settings tab is for administrators.
   document.querySelector('#tabs [data-tab="settings"]').hidden = !isAdmin();
-  const loginError = params0.get("loginError");
-  if (loginError) { history.replaceState(null, "", location.pathname); toast(loginError); }
+  if (params0.has("loginError")) { history.replaceState(null, "", location.pathname); if (flash) toast(flash); }
 
   $("tz").textContent = `(${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
 
@@ -2359,7 +2369,7 @@ async function init() {
   // Coming back from a platform's sign-in page.
   const params = new URLSearchParams(location.search);
   const connected = params.get("connected");
-  const connectError = params.get("connectError");
+  const connectError = params.has("connectError") ? flash || "That sign-in didn't work." : null;
   if (connected || connectError) {
     history.replaceState(null, "", location.pathname);
     tab = "settings";

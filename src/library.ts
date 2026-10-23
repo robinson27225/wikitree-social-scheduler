@@ -229,6 +229,46 @@ export function pruneOrphanMedia(minAgeMs = 24 * 3_600_000): number {
   return removed;
 }
 
+/** A finished post's pictures are kept this long (the Queue shows 90 days), then removed to save disk space. */
+export const KEEP_POSTED_MEDIA_DAYS = 90;
+
+/**
+ * Deletes the pictures and videos of posts that went out everywhere and are older than `days`. Their record (text, links,
+ * wiki rows, numbers) stays; only the files go, and the Queue says "Picture removed". A post with anything still pending or
+ * failed keeps its files, since a retry or a hand-post needs them. Returns how many files it removed.
+ */
+export function pruneOldMedia(days = KEEP_POSTED_MEDIA_DAYS): number {
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+  let removed = 0;
+  for (const post of all(
+    `SELECT p.id, p.media_file, p.extra_media FROM posts p
+      WHERE p.media_file != '' AND p.scheduled_at < ?
+        AND EXISTS (SELECT 1 FROM targets t WHERE t.post_id = p.id)
+        AND NOT EXISTS (SELECT 1 FROM targets t WHERE t.post_id = p.id AND (t.status != 'posted' OR COALESCE(t.posted_at, p.scheduled_at) >= ?))`,
+    cutoff,
+    cutoff,
+  )) {
+    for (const name of [String(post.media_file), ...extraImagesOf(post.extra_media).map((e) => e.file)]) {
+      const file = path.join(MEDIA_DIR, path.basename(name));
+      if (fs.existsSync(file)) {
+        fs.rmSync(file, { force: true });
+        removed++;
+      }
+    }
+  }
+  // Preview pictures are cheap to make again, so any that haven't been touched for a while go too.
+  const stale = Date.now() - 120 * 86_400_000;
+  for (const name of fs.existsSync(THUMB_DIR) ? fs.readdirSync(THUMB_DIR) : []) {
+    const file = path.join(THUMB_DIR, name);
+    try {
+      if (fs.statSync(file).mtimeMs < stale) fs.rmSync(file, { force: true });
+    } catch {
+      /* gone already */
+    }
+  }
+  return removed;
+}
+
 /** Forgets library entries whose file isn't on the disk (for example after restoring a backup, which carries only the media of posts not yet sent). */
 export function pruneMissingFiles(): number {
   let removed = 0;

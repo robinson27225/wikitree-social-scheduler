@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
-import { constants as fsConstants, readFileSync } from "node:fs";
+import fsSync, { constants as fsConstants, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
+import { flashAndRedirect } from "./flash.ts";
+import { installFetchTimeout } from "./http.ts";
 import { claudeConfiguredFor, DEFAULT_MODEL, draft, explainClaudeError, moveSharedKeyToItsOwner, setApiKeyFor } from "./claude.ts";
 import { addPending, completeConnect, completeWithToken, connectorViews, pendingView, saveAppCreds, startConnect } from "./connect.ts";
 import {
@@ -25,17 +27,17 @@ import {
 } from "./db.ts";
 import { buildBrief } from "./brief.ts";
 import { thumbnail } from "./images.ts";
-import { deleteFromLibrary, extraImagesOf, libraryFile, libraryIdOf, listLibrary, MAX_IMAGES_PER_POST, pruneMissingFiles, pruneOrphanMedia, saveUpload, sourceRef, thumbKey } from "./library.ts";
+import { deleteFromLibrary, extraImagesOf, libraryFile, libraryIdOf, listLibrary, KEEP_POSTED_MEDIA_DAYS, MAX_IMAGES_PER_POST, pruneMissingFiles, pruneOldMedia, pruneOrphanMedia, saveUpload, sourceRef, thumbKey } from "./library.ts";
 import { mediaKindOf, type MediaKind } from "./media.ts";
 import { getHostConfig, publicHostSettings, saveHostConfig, testHost } from "./publicHost.ts";
 import { isKeepingAwake, setKeepAwake } from "./keepawake.ts";
 import { providerFor, providers, publicConfig } from "./providers/index.ts";
 import type { Config } from "./providers/types.ts";
-import { markPosted, placeTarget, publishTarget, releaseServerCopy, setHandedOff, setPostedLink, startScheduler, unmarkPosted } from "./scheduler.ts";
+import { markPosted, placeTarget, publishTarget, releaseServerCopy, schedulerHealth, setHandedOff, setPostedLink, startScheduler, unmarkPosted } from "./scheduler.ts";
 import { errMsg, HttpError } from "./util.ts";
 import { activeSessionCounts, authRoutes, requireAdmin, requireAuth } from "./auth.ts";
 import { backupStatus, checkDisk, diskUsage, maybeRunNightly, runBackup } from "./autobackup.ts";
-import { audit, recentAudit } from "./audit.ts";
+import { audit, AUDIT_KEEP_DAYS, pruneAudit, recentAudit } from "./audit.ts";
 import { config } from "./config.ts";
 import { readMemory, startMemorySampler } from "./resources.ts";
 import { listColumnSettings, saveColumnSettings, wikiRows } from "./wiki.ts";
@@ -264,20 +266,24 @@ async function validatePost(
 }
 
 function postsWithTargets(whereSql = "", ...params: unknown[]) {
+  const oldCutoff = new Date(Date.now() - KEEP_POSTED_MEDIA_DAYS * 86_400_000).toISOString();
   const posts = all(`SELECT * FROM posts ${whereSql} ORDER BY scheduled_at DESC, id DESC`, ...params);
   return posts.map((post) => {
     const postKind = post.media_file ? mediaKindOf(post.media_file) : null;
+    const mediaRemoved = Boolean(post.media_file) && post.scheduled_at < oldCutoff && !fsSync.existsSync(path.join(MEDIA_DIR, path.basename(post.media_file)));
     return {
       id: post.id,
       text: post.text,
       altText: post.alt_text,
       title: post.title ?? "",
       // A small picture for the Queue (a still frame for videos), and the file name for "show in Finder".
-      mediaUrl: post.media_file ? `/api/media-thumb/${encodeURIComponent(post.media_file)}` : null,
-      mediaFile: post.media_file || null,
+      mediaUrl: post.media_file && !mediaRemoved ? `/api/media-thumb/${encodeURIComponent(post.media_file)}` : null,
+      mediaFile: post.media_file && !mediaRemoved ? post.media_file : null,
+      // The pictures of a finished post are cleared out after a while (see pruneOldMedia).
+      mediaRemoved,
       mediaKind: postKind,
       // The pictures after the first, in order, each with its own description.
-      extraMedia: extraImagesOf(post.extra_media).map((e) => ({
+      extraMedia: (mediaRemoved ? [] : extraImagesOf(post.extra_media)).map((e) => ({
         file: e.file,
         url: `/api/media-thumb/${encodeURIComponent(e.file)}`,
         altText: e.alt,
@@ -364,6 +370,7 @@ app.get("/api/status", (req, res) => {
     maxUploadBytes: config.maxUploadBytes,
     hostConfigured: getHostConfig() !== null,
     version: APP_VERSION,
+    schedulerStalled: schedulerHealth().stalled,
   });
 });
 
@@ -965,7 +972,7 @@ app.get("/oauth/callback/:id", requireAdmin, async (req, res) => {
     audit(req, "connector.connect", String(req.params.id));
     res.redirect(`/?connected=${encodeURIComponent(token)}`);
   } catch (e) {
-    res.redirect(`/?connectError=${encodeURIComponent(errMsg(e))}`);
+    flashAndRedirect(res, errMsg(e), "/", "connectError");
   }
 });
 
@@ -1263,12 +1270,20 @@ seedWikiSettings();
 // The test suite turns this off (SEED_MANUAL_ACCOUNTS=off) so its servers start with no accounts at all.
 if (process.env.SEED_MANUAL_ACCOUNTS !== "off") seedManualAccounts();
 {
-  const orphans = pruneOrphanMedia();
-  if (orphans > 0) console.log(`Removed ${orphans} picture${orphans === 1 ? "" : "s"} no post uses any more.`);
-  setInterval(() => pruneOrphanMedia(), 24 * 3_600_000).unref();
+  const housekeepingNow = () => {
+    const orphans = pruneOrphanMedia();
+    if (orphans > 0) console.log(`Removed ${orphans} picture${orphans === 1 ? "" : "s"} no post uses any more.`);
+    const old = pruneOldMedia();
+    if (old > 0) console.log(`Removed ${old} picture${old === 1 ? "" : "s"} of posts finished more than ${KEEP_POSTED_MEDIA_DAYS} days ago.`);
+    const trimmed = pruneAudit();
+    if (trimmed > 0) console.log(`Trimmed ${trimmed} activity-log entr${trimmed === 1 ? "y" : "ies"} older than ${AUDIT_KEEP_DAYS} days.`);
+  };
+  housekeepingNow();
+  setInterval(housekeepingNow, 24 * 3_600_000).unref();
 }
 pruneMissingFiles(); // after a restore, library entries whose files weren't in the backup would show as broken pictures
 
+installFetchTimeout();
 const server = app.listen(PORT, config.bindHost, () => {
   setKeepAwake(getSetting("keep_awake", "true") === "true");
   startScheduler();

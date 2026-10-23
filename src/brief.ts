@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { claudeConfiguredFor } from "./claude.ts";
+import { schedulerHealth } from "./scheduler.ts";
 import { all, readConfig } from "./db.ts";
 import { providerFor } from "./providers/index.ts";
 import { backupStatus } from "./autobackup.ts";
@@ -128,6 +129,7 @@ export function buildBrief(now: Date = new Date()): Brief {
 
   // Things that will quietly stop working if nobody notices.
   const warnings: string[] = [];
+  if (schedulerHealth().stalled) warnings.push("The posting loop has stopped, so nothing will go out until the app is restarted.");
   for (const a of all("SELECT label, kind, config FROM accounts WHERE retired = 0")) {
     const c = readConfig(a.config);
     const expiries: [string, unknown][] = [

@@ -15,9 +15,9 @@ export const MIN_SERVER_LEAD_MS = 6 * 60_000;
 const SERVER_OVERDUE_MS = 60 * 60_000;
 const MAINTAIN_EVERY_MS = 6 * 60 * 60_000;
 
-let ticking = false;
 let timer: NodeJS.Timeout | undefined;
 let statsTimer: NodeJS.Timeout | undefined;
+let watchdog: NodeJS.Timeout | undefined;
 const STATS_EVERY_MS = 15 * 60_000;
 let lastMaintained = 0;
 
@@ -370,47 +370,84 @@ export async function maintainAccounts(): Promise<void> {
   }
 }
 
-/** One pass over everything that is due. Exported for tests. */
-export async function tick(now: Date = new Date()): Promise<void> {
-  if (ticking) return;
-  ticking = true;
-  try {
-    const due = all(
-      `SELECT t.id, p.scheduled_at, a.kind, a.label
-         FROM targets t
-         JOIN posts p ON p.id = t.post_id
-         JOIN accounts a ON a.id = t.account_id
-        WHERE t.status = 'scheduled' AND t.mode = 'local' AND p.scheduled_at <= ?
-        ORDER BY p.scheduled_at, t.id`,
-      now.toISOString(),
-    );
-    let missed = 0;
-    for (const target of due) {
-      if (providerFor(target.kind).manual) {
-        // Nothing to call and nothing stale to avoid: just tell the person it's time.
-        markReady(target.id, target.label);
-        continue;
-      }
-      const lateBy = now.getTime() - Date.parse(target.scheduled_at);
-      if (lateBy > graceMs()) {
-        // The app wasn't running (or the Mac was asleep). Don't surprise-post something stale.
-        run("UPDATE targets SET status = 'missed' WHERE id = ? AND status = 'scheduled'", target.id);
-        missed++;
-      } else {
-        await publishTarget(target.id);
-      }
-    }
-    if (missed > 0) {
-      notify("Scheduled posts missed", `${missed} post(s) were due while the app wasn't running. Open the Queue to review.`);
-    }
-    await reconcileServerHeld(now);
+/**
+ * At most this many posts are being sent at once. A long upload (a video) no longer holds up everything else that is due,
+ * and a burst of posts still doesn't open a flood of connections.
+ */
+const MAX_AT_ONCE = 4;
+let active = 0;
+const waiting: (() => void)[] = [];
 
+async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (active < MAX_AT_ONCE) active++;
+  else await new Promise<void>((resolve) => waiting.push(resolve)); // the slot is handed over by whoever finishes
+  try {
+    return await fn();
+  } finally {
+    const next = waiting.shift();
+    if (next) next();
+    else active--;
+  }
+}
+
+let housekeeping = false;
+let lastTickAt = 0;
+let startedAt = 0;
+/** A pass normally starts every 20 seconds, whatever else is going on. */
+const STALL_MS = 5 * 60_000;
+
+/** Whether the posting loop is still turning over. If not, nothing will go out until the app is restarted. */
+export function schedulerHealth(nowMs = Date.now()): { running: boolean; stalled: boolean; lastTickAt: number | null } {
+  const running = startedAt > 0;
+  return { running, stalled: running && nowMs - Math.max(lastTickAt, startedAt) > STALL_MS, lastTickAt: lastTickAt || null };
+}
+
+/** One pass over everything that is due. Exported for tests. Passes can overlap: a claimed post is never picked up twice. */
+export async function tick(now: Date = new Date()): Promise<void> {
+  lastTickAt = Date.now();
+  const due = all(
+    `SELECT t.id, p.scheduled_at, a.kind, a.label
+       FROM targets t
+       JOIN posts p ON p.id = t.post_id
+       JOIN accounts a ON a.id = t.account_id
+      WHERE t.status = 'scheduled' AND t.mode = 'local' AND p.scheduled_at <= ?
+      ORDER BY p.scheduled_at, t.id`,
+    now.toISOString(),
+  );
+  let missed = 0;
+  const sending: Promise<unknown>[] = [];
+  for (const target of due) {
+    if (providerFor(target.kind).manual) {
+      // Nothing to call and nothing stale to avoid: just tell the person it's time.
+      markReady(target.id, target.label);
+      continue;
+    }
+    const lateBy = now.getTime() - Date.parse(target.scheduled_at);
+    if (lateBy > graceMs()) {
+      // The app wasn't running (or the Mac was asleep). Don't surprise-post something stale.
+      run("UPDATE targets SET status = 'missed' WHERE id = ? AND status = 'scheduled'", target.id);
+      missed++;
+    } else {
+      // Each in its own slot, so a slow one doesn't hold up the rest. Claimed first thing inside publishTarget.
+      sending.push(withSlot(() => publishTarget(target.id)).catch((e) => console.error(`Posting target ${target.id} failed unexpectedly: ${errMsg(e)}`)));
+    }
+  }
+  if (missed > 0) {
+    notify("Scheduled posts missed", `${missed} post(s) were due while the app wasn't running. Open the Queue to review.`);
+  }
+  await Promise.all(sending);
+
+  // Checking on platform-held posts and renewing sign-ins is done by one pass at a time.
+  if (housekeeping) return;
+  housekeeping = true;
+  try {
+    await reconcileServerHeld(now);
     if (now.getTime() - lastMaintained >= MAINTAIN_EVERY_MS) {
       lastMaintained = now.getTime();
       await maintainAccounts();
     }
   } finally {
-    ticking = false;
+    housekeeping = false;
   }
 }
 
@@ -421,8 +458,22 @@ export function startScheduler(): void {
     "UPDATE targets SET status = 'failed', error = ? WHERE status = 'posting'",
     "Interrupted while posting. Check the account before retrying, it may have been published.",
   );
+  startedAt = Date.now();
   void tick();
-  timer = setInterval(() => void tick(), TICK_MS);
+  timer = setInterval(() => void tick().catch((e) => console.error(`A scheduler pass failed: ${errMsg(e)}`)), TICK_MS);
+  // If passes stop starting, the event loop is blocked or something is badly wrong: say so once, and again if it recovers.
+  let alerted = false;
+  watchdog = setInterval(() => {
+    const health = schedulerHealth();
+    if (health.stalled && !alerted) {
+      alerted = true;
+      notify("Scheduler stalled", "The posting loop has stopped. Nothing will be posted until the app is restarted: fly apps restart wikitree-social-scheduler.");
+    } else if (!health.stalled && alerted) {
+      alerted = false;
+      notify("Scheduler running again", "The posting loop is running again.");
+    }
+  }, 60_000);
+  watchdog.unref();
   // Reading post numbers is slow and optional, so it runs on its own timer and never holds up a post.
   const readStats = () => void collectStats().catch((e) => console.warn(`Couldn't read post numbers: ${errMsg(e)}`));
   setTimeout(readStats, 2 * 60_000).unref();
@@ -432,4 +483,6 @@ export function startScheduler(): void {
 export function stopScheduler(): void {
   if (timer) clearInterval(timer);
   if (statsTimer) clearInterval(statsTimer);
+  if (watchdog) clearInterval(watchdog);
+  startedAt = 0;
 }

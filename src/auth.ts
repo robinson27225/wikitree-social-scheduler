@@ -9,6 +9,7 @@ import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { audit } from "./audit.ts";
 import { config } from "./config.ts";
+import { flashAndRedirect } from "./flash.ts";
 import { all, get, run } from "./db.ts";
 import { normalizeEmail, userByEmail, userById, userBySub, type Role, type User } from "./users.ts";
 import { HttpError } from "./util.ts";
@@ -249,7 +250,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   const session = sessionUser(req);
   if (!session) {
     // A platform sending someone back mid-connect lands here as a page view, so send them to the sign-in page.
-    if (req.baseUrl === "/oauth") res.redirect("/?loginError=" + encodeURIComponent("Sign in first, then connect the account again."));
+    if (req.baseUrl === "/oauth") flashAndRedirect(res, "Sign in first, then connect the account again.");
     else res.status(401).json({ error: "Please sign in." });
     return;
   }
@@ -274,7 +275,7 @@ export function requireAdmin(req: Request, _res: Response, next: NextFunction): 
 
 export function authRoutes(app: import("express").Express): void {
   const clientKey = (req: Request) => req.ip ?? "unknown";
-  const fail = (res: Response, message: string) => res.redirect(`/?loginError=${encodeURIComponent(message)}`);
+  const fail = (res: Response, message: string) => flashAndRedirect(res, message);
 
   /** Tells the page who is signed in (or that nobody is), and hands it the CSRF token to send with changes. */
   app.get("/auth/me", (req, res) => {

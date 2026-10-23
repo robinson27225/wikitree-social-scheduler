@@ -18,6 +18,14 @@ export function audit(who: Actor | Request | null | undefined, action: string, d
   }
 }
 
+/** The record of who did what is kept for this many days, then trimmed so it can't grow for ever. */
+export const AUDIT_KEEP_DAYS = 400;
+
+export function pruneAudit(days = AUDIT_KEEP_DAYS): number {
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+  return Number(run("DELETE FROM audit WHERE at < ?", cutoff).changes);
+}
+
 export function recentAudit(limit = 200) {
   const n = Math.min(Math.max(Math.floor(limit) || 200, 1), 1000);
   return all("SELECT id, at, email, action, detail FROM audit ORDER BY id DESC LIMIT ?", n);

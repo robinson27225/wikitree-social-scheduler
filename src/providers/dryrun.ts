@@ -35,6 +35,12 @@ export const dryrun: Provider = {
       help: "Leave empty for success. Any text here makes every post fail with that message.",
     },
     {
+      name: "delayMs",
+      label: "Simulate a slow post (milliseconds)",
+      type: "text",
+      help: "Each post to this account takes this long, for trying out several posts at once.",
+    },
+    {
       name: "nativeSchedule",
       label: "Simulate server-side scheduling",
       type: "checkbox",
@@ -53,6 +59,8 @@ export const dryrun: Provider = {
 
   async publish(config, input) {
     if (config.failWith) throw new Error(String(config.failWith));
+    const delay = Number(config.delayMs);
+    if (Number.isFinite(delay) && delay > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(delay, 60_000)));
     const line = JSON.stringify({
       at: new Date().toISOString(),
       text: input.text,

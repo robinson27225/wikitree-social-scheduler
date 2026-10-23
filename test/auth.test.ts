@@ -74,6 +74,8 @@ async function startServer(name: string, extraEnv: Record<string, string> = {}):
 class Browser {
   cookie = "";
   csrf = "";
+  /** The one-off message the last response left for the page (a sign-in problem), from its flash cookie. */
+  flash = "";
   constructor(private base: string) {}
 
   async raw(method: string, route: string, init: { body?: unknown; headers?: Record<string, string>; csrf?: boolean; json?: boolean } = {}) {
@@ -89,9 +91,14 @@ class Browser {
       }
     } else if (method !== "GET") headers["content-type"] ??= "application/json";
     const res = await fetch(`${this.base}${route}`, { method, headers, body, redirect: "manual" });
+    this.flash = "";
     for (const line of res.headers.getSetCookie()) {
       const [pair] = line.split(";");
       const [name, value] = [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)];
+      if (name === "flash_error") {
+        this.flash = decodeURIComponent(value); // the page reads this once and clears it, so it never stays in the jar
+        continue;
+      }
       const cleared = /max-age=0/i.test(line) || value === "";
       const jar = new Map(this.cookie.split("; ").filter(Boolean).map((c) => [c.slice(0, c.indexOf("=")), c.slice(c.indexOf("=") + 1)] as const));
       if (cleared) jar.delete(name);
@@ -115,7 +122,7 @@ async function signIn(browser: Browser, identity: Identity, tweaks?: Tweaks): Pr
   const back = new URL(google.approve(start.headers.get("location")!, identity, tweaks));
   const done = await browser.raw("GET", `${back.pathname}${back.search}`);
   const location = done.headers.get("location") ?? "";
-  const error = new URL(location, "http://x").searchParams.get("loginError");
+  const error = new URL(location, "http://x").searchParams.has("loginError") ? browser.flash || "(no message)" : null;
   if (!error) {
     const me = await browser.call("GET", "/auth/me");
     browser.csrf = me.json.csrf ?? "";
@@ -263,7 +270,8 @@ describe("signing in", () => {
     assert.equal((await b.raw("GET", route)).headers.get("location"), "/");
     const again = newBrowser();
     assert.match((await again.raw("GET", route)).headers.get("location") ?? "", /loginError/);
-    assert.match((await again.raw("GET", "/auth/callback?code=abc&state=nope")).headers.get("location") ?? "", /expired/);
+    await again.raw("GET", "/auth/callback?code=abc&state=nope");
+    assert.match(again.flash, /expired/);
     assert.match((await again.raw("GET", "/auth/callback")).headers.get("location") ?? "", /loginError/);
   });
 });
@@ -511,6 +519,21 @@ describe("a key that used to be shared by everyone", () => {
   });
 });
 
+describe("messages on the sign-in page can't be written by a link", () => {
+  it("shows only what this server put in its own cookie, never words from the address", async () => {
+    const b = newBrowser();
+    const res = await b.raw("GET", "/?loginError=Call+555-0100+to+unlock+your+account");
+    assert.equal(res.status, 200);
+    assert.equal(b.flash, "", "the server doesn't turn address text into a message");
+    const page = await (await fetch(`${app.base}/app.js`)).text();
+    assert.ok(!/params0\.get\("loginError"\)/.test(page), "the page doesn't read message text from the address");
+    // the server's own message arrives as a cookie, with only a flag in the address
+    const start = await b.raw("GET", "/auth/callback?code=x&state=nope");
+    assert.equal(start.headers.get("location"), "/?loginError=1");
+    assert.match(b.flash, /expired/);
+  });
+});
+
 describe("sessions end on their own", () => {
   it("expire after 12 idle hours or 7 days in total", async () => {
     const db = new DatabaseSync(path.join(app.dataDir, "scheduler.db"));
@@ -577,7 +600,8 @@ describe("guessing at sign-in", () => {
       let limited = false;
       for (let i = 0; i < 40 && !limited; i++) {
         const r = await b.raw("GET", "/auth/login");
-        limited = /Too%20many/.test(r.headers.get("location") ?? "");
+        void r;
+        limited = /Too many/.test(b.flash);
       }
       assert.ok(limited, "should be limited after a burst of attempts");
     } finally {

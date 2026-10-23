@@ -51,8 +51,7 @@ export const DEFAULT_ROWS: WtcRow[] = [
   { column: "instagram", image: "PFWC-2.png", link: "https://www.instagram.com/wikitreers/", label: "@WikiTreers<br>@blainebettinger", placeholder: "https://www.instagram.com/p//" },
   { column: "threads", image: "PFWC-31.png", link: "https://www.threads.net/@wikitreers", label: "@WikiTreers<br>@blainebettinger", placeholder: "https://www.threads.net/@wikitreers/post//" },
   { column: "youtube", image: "PFWC-6.png", link: "https://www.youtube.com/wikitreers/", label: "@WikiTreers<br>@BlaineBettinger", placeholder: "https://www.youtube.com/post//" },
-  // New: the picture file is a stand-in until someone picks one.
-  { column: "reddit", image: "PFWC-REDDIT.png", link: "https://www.reddit.com/r/wikitree/", label: "r/wikitree<br>", placeholder: "https://www.reddit.com/r/wikitree/comments//" },
+  { column: "reddit", image: "PFWC-39.png", link: "https://www.reddit.com/r/wikitree/", label: "r/wikitree<br>", placeholder: "https://www.reddit.com/r/wikitree/comments//" },
 ];
 
 const SETTING = "wtc_rows";

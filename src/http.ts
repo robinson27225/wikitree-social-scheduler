@@ -70,3 +70,13 @@ export async function pollUntil<T>(
     await sleep(everyMs);
   }
 }
+
+/**
+ * Gives every network call without its own deadline one (default 30 minutes, long enough for the biggest video upload on a
+ * slow line). Without it a connection that stalls could hold a post, and the posts behind it, until the app is restarted.
+ */
+export function installFetchTimeout(ms = 30 * 60_000): void {
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+    original(input, init?.signal ? init : { ...init, signal: AbortSignal.timeout(ms) })) as typeof fetch;
+}
