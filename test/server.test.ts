@@ -433,6 +433,26 @@ describe("posts with several pictures", () => {
   });
 });
 
+describe("the Queue's list of posts", () => {
+  it("shows the last 90 days and whatever is still waiting, and everything on request", async () => {
+    const channel = await addAccount("dryrun", "Old posts channel");
+    const db = new DatabaseSync(path.join(dataDir, "scheduler.db"));
+    const old = new Date(Date.now() - 200 * 86_400_000).toISOString();
+    const add = (text: string, status: string) => {
+      const p = db.prepare("INSERT INTO posts (text, alt_text, media_file, source_path, scheduled_at, created_at) VALUES (?, '', '', '', ?, ?)").run(text, old, old);
+      db.prepare("INSERT INTO targets (post_id, account_id, status, posted_at) VALUES (?, ?, ?, ?)").run(p.lastInsertRowid, channel, status, old);
+    };
+    add("Long ago and done", "posted");
+    add("Long ago but failed", "failed");
+    db.close();
+    const texts = async (route: string) => ((await call("GET", route)).json as any[]).map((p) => p.text);
+    const recent = await texts("/api/posts");
+    assert.ok(!recent.includes("Long ago and done"), "old and finished: left out");
+    assert.ok(recent.includes("Long ago but failed"), "old but still needs someone: kept");
+    assert.ok((await texts("/api/posts?days=0")).includes("Long ago and done"), "everything on request");
+  });
+});
+
 describe("taking an account out of use", () => {
   it("deletes an account that never posted, but only retires one with history, keeping its record", async () => {
     const fresh = await addAccount("dryrun", "Never used");

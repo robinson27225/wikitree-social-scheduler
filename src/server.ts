@@ -563,8 +563,15 @@ app.get("/api/media/:file", async (req, res) => {
 
 // ---------------------------------------------------------------- posts
 
-app.get("/api/posts", (_req, res) => {
-  res.json(postsWithTargets());
+/** The last 90 days, plus anything still waiting on a person however old; ?days=0 for everything. The page asks again every 15 seconds, so a year of history shouldn't ride along each time. */
+app.get("/api/posts", (req, res) => {
+  const days = req.query.days === undefined ? 90 : Math.max(0, Math.floor(Number(req.query.days)) || 0);
+  if (days === 0) {
+    res.json(postsWithTargets());
+    return;
+  }
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  res.json(postsWithTargets("WHERE scheduled_at >= ? OR EXISTS (SELECT 1 FROM targets t WHERE t.post_id = posts.id AND t.status != 'posted')", since));
 });
 
 /** Keeps the post's own copy of a library file, so renaming, moving or deleting the original later can't break a scheduled post. */

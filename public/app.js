@@ -13,6 +13,7 @@ const state = {
   settings: {},
   items: [], // images and videos in the media library
   selected: null, // { id, name, kind } where id is null for a text-only post
+  showOlder: false, // the Queue shows the last 90 days unless asked for everything
   more: [], // library items added after the first picture of a post of pictures (each { id, name })
   moreAlt: {}, // library id -> the description typed for that extra picture
   pendingToken: null,
@@ -804,7 +805,7 @@ function postBucket(post) {
 
 async function refreshQueueBadge() {
   try {
-    const posts = await api("/api/posts");
+    const posts = await api(state.showOlder ? "/api/posts?days=0" : "/api/posts");
     state.posts = posts;
     renderDue();
     const n = posts.filter((p) => postBucket(p) === "attention").length;
@@ -832,6 +833,9 @@ async function loadQueue() {
     root.append(el("h2", {}, title), ...items.map(renderPost));
   }
   if (!any) root.append(el("p", { class: "empty" }, "Nothing scheduled yet. Pick an image or video on the Schedule tab."));
+  if (!state.showOlder) {
+    root.append(el("p", {}, el("button", { type: "button", class: "link", onclick: () => { state.showOlder = true; loadQueue(); } }, "Show posts older than 90 days")));
+  }
 }
 
 /** Posted items show when they actually went out; the rest show when they're due. */
