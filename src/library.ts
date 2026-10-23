@@ -6,7 +6,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import sharp from "sharp";
-import { all, get, LIBRARY_DIR, run, THUMB_DIR, TMP_DIR } from "./db.ts";
+import { all, get, LIBRARY_DIR, MEDIA_DIR, run, THUMB_DIR, TMP_DIR } from "./db.ts";
 import { mediaKindOf, type MediaKind } from "./media.ts";
 import { HttpError } from "./util.ts";
 
@@ -200,6 +200,33 @@ export async function deleteFromLibrary(id: number): Promise<void> {
     const key = crypto.createHash("sha1").update(`${row.stored}|${edge}`).digest("hex");
     await fsp.rm(path.join(THUMB_DIR, `${key}.jpg`), { force: true });
   }
+}
+
+/**
+ * Deletes the pictures and videos in the posts' own folder that no post uses any more (a cancelled post, a failed save). A
+ * file younger than `minAgeMs` is left alone, in case a post is being made right now. Returns how many it removed.
+ */
+export function pruneOrphanMedia(minAgeMs = 24 * 3_600_000): number {
+  const used = new Set<string>();
+  for (const row of all("SELECT media_file, extra_media FROM posts")) {
+    if (row.media_file) used.add(String(row.media_file));
+    for (const extra of extraImagesOf(row.extra_media)) used.add(extra.file);
+  }
+  let removed = 0;
+  for (const name of fs.readdirSync(MEDIA_DIR)) {
+    if (used.has(name)) continue;
+    const file = path.join(MEDIA_DIR, name);
+    try {
+      const stat = fs.statSync(file);
+      // ctime moves when a second name is made for the file, so a library file just linked into a new post counts as new.
+      if (!stat.isFile() || (minAgeMs > 0 && Date.now() - Math.max(stat.mtimeMs, stat.ctimeMs) < minAgeMs)) continue;
+      fs.rmSync(file, { force: true });
+      removed++;
+    } catch {
+      /* gone already, or not ours to touch */
+    }
+  }
+  return removed;
 }
 
 /** Forgets library entries whose file isn't on the disk (for example after restoring a backup, which carries only the media of posts not yet sent). */

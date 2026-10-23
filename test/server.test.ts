@@ -433,6 +433,27 @@ describe("posts with several pictures", () => {
   });
 });
 
+describe("taking an account out of use", () => {
+  it("deletes an account that never posted, but only retires one with history, keeping its record", async () => {
+    const fresh = await addAccount("dryrun", "Never used");
+    assert.deepEqual((await call("DELETE", `/api/accounts/${fresh}`, {})).json, { ok: true });
+    assert.ok(!((await call("GET", "/api/accounts")).json as any[]).some((a) => a.id === fresh));
+
+    const used = await addAccount("dryrun", "Has posted");
+    const r = await call("POST", "/api/posts", { text: "A post", scheduledAt: later(120), accountIds: [used] });
+    const post = (await call("GET", "/api/posts")).json.find((p: any) => p.id === r.json.id);
+    await call("POST", `/api/targets/${post.targets[0].id}/post-now`, {});
+    const gone = await call("DELETE", `/api/accounts/${used}`, {});
+    assert.deepEqual(gone.json, { ok: true, retired: true });
+
+    assert.ok(!((await call("GET", "/api/accounts")).json as any[]).some((a) => a.id === used), "out of the lists");
+    const again = (await call("GET", "/api/posts")).json.find((p: any) => p.id === r.json.id);
+    assert.equal(again.targets[0].status, "posted", "the record of the post is still there");
+    assert.equal(again.targets[0].accountLabel, "Has posted");
+    assert.match((await call("POST", "/api/posts", { text: "Another", scheduledAt: later(120), accountIds: [used] })).json.error, /no longer exists/);
+  });
+});
+
 describe("WikiTree Challenge posts", () => {
   let channel: number;
   before(async () => {

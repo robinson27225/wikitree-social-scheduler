@@ -25,7 +25,7 @@ import {
 } from "./db.ts";
 import { buildBrief } from "./brief.ts";
 import { thumbnail } from "./images.ts";
-import { deleteFromLibrary, extraImagesOf, libraryFile, libraryIdOf, listLibrary, MAX_IMAGES_PER_POST, pruneMissingFiles, saveUpload, sourceRef, thumbKey } from "./library.ts";
+import { deleteFromLibrary, extraImagesOf, libraryFile, libraryIdOf, listLibrary, MAX_IMAGES_PER_POST, pruneMissingFiles, pruneOrphanMedia, saveUpload, sourceRef, thumbKey } from "./library.ts";
 import { mediaKindOf, type MediaKind } from "./media.ts";
 import { getHostConfig, publicHostSettings, saveHostConfig, testHost } from "./publicHost.ts";
 import { isKeepingAwake, setKeepAwake } from "./keepawake.ts";
@@ -141,7 +141,7 @@ function loadAccounts(ids: unknown): Record<string, any>[] {
     throw new HttpError(400, "Choose at least one account to post to.");
   }
   return ids.map((id) => {
-    const row = get("SELECT * FROM accounts WHERE id = ?", Number(id));
+    const row = get("SELECT * FROM accounts WHERE id = ? AND retired = 0", Number(id));
     if (!row) throw new HttpError(400, `Account ${id} no longer exists.`);
     return row;
   });
@@ -433,7 +433,7 @@ app.get("/api/providers", (_req, res) => {
 });
 
 app.get("/api/accounts", (_req, res) => {
-  res.json(all("SELECT * FROM accounts ORDER BY id").map(accountRow));
+  res.json(all("SELECT * FROM accounts WHERE retired = 0 ORDER BY id").map(accountRow));
 });
 
 app.post("/api/accounts", requireAdmin, async (req, res) => {
@@ -490,10 +490,21 @@ app.delete("/api/accounts/:id", requireAdmin, (req, res) => {
   if (pending && Number(pending.n) > 0) {
     throw new HttpError(409, "This account still has scheduled posts. Cancel or move them first.");
   }
-  const removed = get("SELECT label FROM accounts WHERE id = ?", id);
-  run("DELETE FROM targets WHERE account_id = ?", id);
+  const removed = get("SELECT * FROM accounts WHERE id = ?", id);
+  if (!removed) throw new HttpError(404, "No such account.");
+  const history = get("SELECT COUNT(*) AS n FROM targets WHERE account_id = ?", id);
+  if (Number(history?.n ?? 0) > 0) {
+    // It has posted before. Deleting it would erase the links, the wiki rows and the numbers for all of that, so it is only
+    // taken out of use: gone from every list, its sign-in details wiped, its history kept.
+    run("DELETE FROM targets WHERE account_id = ? AND status IN ('missed', 'failed', 'ready')", id);
+    const provider = providerFor(String(removed.kind));
+    run("UPDATE accounts SET retired = 1, config = ? WHERE id = ?", writeConfig(publicConfig(provider, readConfig(String(removed.config)))), id);
+    audit(req, "account.retire", String(removed.label));
+    res.json({ ok: true, retired: true });
+    return;
+  }
   run("DELETE FROM accounts WHERE id = ?", id);
-  audit(req, "account.remove", String(removed?.label ?? `#${id}`));
+  audit(req, "account.remove", String(removed.label));
   res.json({ ok: true });
 });
 
@@ -767,6 +778,7 @@ app.delete("/api/posts/:id", async (req, res) => {
     run("DELETE FROM posts WHERE id = ?", id);
     // A text-only post has no media_file; rm of "" would target the whole media folder.
     if (post.media_file) await fs.rm(path.join(MEDIA_DIR, path.basename(post.media_file)), { force: true });
+    for (const extra of extraImagesOf(post.extra_media)) await fs.rm(path.join(MEDIA_DIR, path.basename(extra.file)), { force: true });
   }
   audit(req, "post.cancel", `#${id}`);
   res.json({ ok: true });
@@ -1099,7 +1111,7 @@ app.get("/api/export/published", (req, res) => {
 app.get("/api/stats", (req, res) => {
   const days = Math.min(Math.max(Math.floor(Number(req.query.days)) || 30, 1), 365);
   const rows = statsRows(new Date(Date.now() - days * 86_400_000).toISOString());
-  const accounts = all("SELECT id, kind, label FROM accounts ORDER BY label");
+  const accounts = all("SELECT id, kind, label FROM accounts WHERE retired = 0 ORDER BY label");
   res.json({
     days,
     rows,
@@ -1189,7 +1201,7 @@ app.post("/api/draft", async (req, res) => {
 
   const accounts = Array.isArray(accountIds)
     ? accountIds.flatMap((id) => {
-        const row = get("SELECT * FROM accounts WHERE id = ?", Number(id));
+        const row = get("SELECT * FROM accounts WHERE id = ? AND retired = 0", Number(id));
         return row ? [row] : [];
       })
     : [];
@@ -1243,6 +1255,11 @@ seedTemplates();
 seedWikiSettings();
 // The test suite turns this off (SEED_MANUAL_ACCOUNTS=off) so its servers start with no accounts at all.
 if (process.env.SEED_MANUAL_ACCOUNTS !== "off") seedManualAccounts();
+{
+  const orphans = pruneOrphanMedia();
+  if (orphans > 0) console.log(`Removed ${orphans} picture${orphans === 1 ? "" : "s"} no post uses any more.`);
+  setInterval(() => pruneOrphanMedia(), 24 * 3_600_000).unref();
+}
 pruneMissingFiles(); // after a restore, library entries whose files weren't in the backup would show as broken pictures
 
 const server = app.listen(PORT, config.bindHost, () => {

@@ -189,7 +189,7 @@ function identityOf(kind: string, c: Config): string {
 
 function findExisting(a: DiscoveredAccount): { id: number } | undefined {
   const wanted = identityOf(a.kind, a.config);
-  return all("SELECT id, config FROM accounts WHERE kind = ?", a.kind).find(
+  return all("SELECT id, config FROM accounts WHERE retired = 0 AND kind = ?", a.kind).find(
     // Reddit's identity includes the subreddit, which is only chosen later, so match on the login alone.
     (row) =>
       a.kind === "reddit"

@@ -1230,7 +1230,7 @@ async function loadStats() {
       return [
         el("td", { class: "snip" },
           el("div", { class: "muted" }, `${formatWhen(r.postedAt)} · ${r.channel}`),
-          r.url ? el("a", { href: r.url, target: "_blank", rel: "noopener" }, snippet || "(no text)") : snippet || "(no text)"),
+          /^https?:\/\//i.test(r.url ?? "") ? el("a", { href: r.url, target: "_blank", rel: "noopener" }, snippet || "(no text)") : snippet || "(no text)"),
         ...columns.map((c) => el("td", { class: typeof r.metrics[c.key] === "number" ? "" : "none" }, formatCount(r.metrics[c.key]))),
       ];
     }),
@@ -1514,9 +1514,10 @@ function renderAccountList() {
         el("button", {
           class: "danger",
           onclick: async () => {
-            if (!confirm(`Remove ${account.label}?`)) return;
+            if (!confirm(`Remove ${account.label}?\n\nIf it has posted before, its record (links, wiki rows, numbers) is kept and only its sign-in details are wiped.`)) return;
             try {
-              await api(`/api/accounts/${account.id}`, { method: "DELETE", body: {} });
+              const r = await api(`/api/accounts/${account.id}`, { method: "DELETE", body: {} });
+              if (r.retired) toast(`${account.label} is out of use. Its history is kept.`);
               await refreshAccounts();
               renderAccountList();
             } catch (e2) {

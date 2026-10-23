@@ -358,7 +358,7 @@ async function reconcileServerHeld(now: Date): Promise<void> {
 
 /** Renews credentials that expire (for example Threads tokens, which last 60 days). */
 export async function maintainAccounts(): Promise<void> {
-  for (const account of all("SELECT id, kind, label FROM accounts")) {
+  for (const account of all("SELECT id, kind, label FROM accounts WHERE retired = 0")) {
     try {
       const provider = providerFor(account.kind);
       if (!provider.maintain) continue;

@@ -128,7 +128,7 @@ export function buildBrief(now: Date = new Date()): Brief {
 
   // Things that will quietly stop working if nobody notices.
   const warnings: string[] = [];
-  for (const a of all("SELECT label, kind, config FROM accounts")) {
+  for (const a of all("SELECT label, kind, config FROM accounts WHERE retired = 0")) {
     const c = readConfig(a.config);
     const expiries: [string, unknown][] = [
       ["its sign-in token", c.tokenExpiresAt],
@@ -147,7 +147,7 @@ export function buildBrief(now: Date = new Date()): Brief {
       }
     }
   }
-  const needsImageHost = all("SELECT 1 FROM accounts WHERE kind IN ('instagram', 'threads', 'tiktok')").length > 0;
+  const needsImageHost = all("SELECT 1 FROM accounts WHERE retired = 0 AND kind IN ('instagram', 'threads', 'tiktok')").length > 0;
   if (needsImageHost && !getHostConfig()) warnings.push("The image host isn't set up, so Instagram, Threads and TikTok photos will fail.");
   // On the shared server each person has their own key, so there is nothing to warn about for the team as a whole.
   if (config.authMode !== "google" && !claudeConfiguredFor(null)) warnings.push("No Anthropic API key is saved, so Draft with Claude is off (posting is unaffected).");

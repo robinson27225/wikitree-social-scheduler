@@ -75,7 +75,7 @@ export function listColumnSettings() {
   const map = savedMap();
   return {
     columns: [...WIKI_COLUMNS, YOUTUBE_COLUMN],
-    accounts: all("SELECT id, kind, label FROM accounts ORDER BY id").map((a) => ({
+    accounts: all("SELECT id, kind, label FROM accounts WHERE retired = 0 ORDER BY id").map((a) => ({
       id: Number(a.id),
       label: String(a.label),
       kindLabel: providerFor(String(a.kind)).label,

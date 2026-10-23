@@ -3,7 +3,7 @@
   "version": "1.2.0",
   "private": true,
   "type": "module",
-  "description": "Local scheduler for posting images + text to Bluesky and Mastodon",
+  "description": "WikiTree's social media scheduler: schedules and posts pictures, videos and text to its accounts",
   "scripts": {
     "start": "tsx src/server.ts",
     "dev": "tsx watch src/server.ts",

@@ -185,6 +185,9 @@ for (const [column, ddl] of [
 
 const postColumns = (db.prepare("PRAGMA table_info(posts)").all() as { name: string }[]).map((c) => c.name);
 // More pictures after the first, as JSON: [{ file, source, alt }]. `media_file` / `source_path` / `alt_text` stay the first picture.
+// An account taken out of use but kept so the record of what was posted through it (links, wiki rows, numbers) survives.
+const accountColumns = (db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[]).map((c) => c.name);
+if (!accountColumns.includes("retired")) db.exec("ALTER TABLE accounts ADD COLUMN retired INTEGER NOT NULL DEFAULT 0");
 // Each person's own Anthropic API key for "Draft with Claude" (encrypted like the other secrets).
 const userColumns = (db.prepare("PRAGMA table_info(users)").all() as { name: string }[]).map((c) => c.name);
 if (!userColumns.includes("anthropic_key")) db.exec("ALTER TABLE users ADD COLUMN anthropic_key TEXT NOT NULL DEFAULT ''");
