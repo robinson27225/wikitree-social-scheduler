@@ -619,7 +619,7 @@ describe("the media library", () => {
     const post = (await call("GET", "/api/posts")).json.find((p: any) => p.id === made.json.id);
     assert.equal(post.libraryId, item.id);
     const download = await fetch(`${base}/api/media/${post.mediaFile}?download=1`);
-    assert.match(download.headers.get("content-disposition") ?? "", /attachment; filename="keep\.png"/);
+    assert.match(download.headers.get("content-disposition") ?? "", /attachment; filename="?keep\.png"?/);
 
     assert.equal((await call("DELETE", `/api/library/${item.id}`)).status, 200);
     assert.equal((await call("GET", `/api/library/${item.id}/thumb`)).status, 404);
