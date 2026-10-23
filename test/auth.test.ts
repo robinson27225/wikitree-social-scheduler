@@ -404,6 +404,113 @@ function identity(sub: string, email: string): Identity {
   return { sub, email, name: "" };
 }
 
+describe("each person's own Claude key", () => {
+  const MEMBER: Identity = { sub: "g-member", email: "member@example.com", name: "Mo Member" };
+  const KEY_A = "sk-ant-admin-key-0123456789abcdef";
+  const KEY_B = "sk-ant-member-key-0123456789abcdef";
+  let admin: Browser;
+  let member: Browser;
+
+  before(async () => {
+    admin = await adminBrowser();
+    await admin.call("POST", "/api/users", { email: MEMBER.email, name: "Mo", role: "member" }); // may already exist from an earlier group
+    member = newBrowser();
+    assert.ok((await signIn(member, MEMBER)).ok);
+  });
+
+  const configured = async (who: Browser) => (await who.call("GET", "/api/status")).json.claudeConfigured;
+
+  it("starts with no key for anyone, and drafting says whose key to add", async () => {
+    assert.equal(await configured(admin), false);
+    assert.equal(await configured(member), false);
+    const r = await member.call("POST", "/api/draft", { kind: "text", brief: "hello", accountIds: [] });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /your own Anthropic API key/);
+  });
+
+  it("keeps each person's key to themselves", async () => {
+    assert.equal((await admin.call("PUT", "/api/me/claude", { apiKey: KEY_A })).status, 200);
+    assert.equal(await configured(admin), true);
+    assert.equal(await configured(member), false, "the administrator's key is not the member's");
+
+    assert.equal((await member.call("PUT", "/api/me/claude", { apiKey: KEY_B })).status, 200);
+    assert.equal(await configured(member), true);
+
+    assert.equal((await member.call("PUT", "/api/me/claude", { apiKey: "" })).status, 200);
+    assert.equal(await configured(member), false, "removing one person's key leaves the other's");
+    assert.equal(await configured(admin), true);
+    await member.call("PUT", "/api/me/claude", { apiKey: KEY_B });
+  });
+
+  it("refuses something that isn't a key", async () => {
+    for (const bad of ["hello", "sk-ant-short", "sk-ant-has space in it 0123456789", "sk-ant-\nnewline-0123456789abcdef"]) {
+      assert.equal((await member.call("PUT", "/api/me/claude", { apiKey: bad })).status, 400, bad);
+    }
+    assert.equal(await configured(member), true, "a refused key changes nothing");
+  });
+
+  it("stores keys encrypted and never sends one back", async () => {
+    const db = new DatabaseSync(path.join(app.dataDir, "scheduler.db"));
+    try {
+      const rows = db.prepare("SELECT email, anthropic_key FROM users WHERE anthropic_key != ''").all() as { email: string; anthropic_key: string }[];
+      assert.equal(rows.length, 2);
+      for (const r of rows) assert.ok(r.anthropic_key.startsWith("enc1:"), "sealed");
+      assert.ok(!JSON.stringify(rows).includes("0123456789abcdef"));
+    } finally {
+      db.close();
+    }
+    for (const who of [admin, member]) {
+      for (const route of ["/api/me/claude", "/api/settings", "/api/status", "/api/users", "/api/audit"]) {
+        const res = await who.call("GET", route);
+        if (res.status === 200) assert.ok(!JSON.stringify(res.json).includes("0123456789abcdef"), route);
+      }
+    }
+    assert.equal((await admin.call("GET", "/api/me/claude")).json.keySet, true);
+  });
+
+  it("the old shared key setting no longer does anything on the server", async () => {
+    await admin.call("PUT", "/api/settings", { apiKey: "sk-ant-shared-should-be-ignored-0123456789" });
+    assert.equal((await admin.call("GET", "/api/settings")).json.apiKeySet, false);
+    assert.equal((await admin.call("GET", "/api/settings")).json.perPersonKeys, true);
+  });
+
+  it("is recorded in the activity log, without the key", async () => {
+    const actions = (await admin.call("GET", "/api/audit")).json.entries.map((e: any) => e.action);
+    assert.ok(actions.includes("claude.key-saved"));
+    assert.ok(actions.includes("claude.key-removed"));
+  });
+});
+
+describe("a key that used to be shared by everyone", () => {
+  it("moves to the person who saved it, once, and is deleted from the shared settings", async () => {
+    const name = "keymove";
+    const first = await startServer(name);
+    first.stop();
+    await new Promise((r) => setTimeout(r, 400));
+    let db = new DatabaseSync(path.join(first.dataDir, "scheduler.db"));
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('anthropic_api_key', 'sk-ant-the-old-shared-key-0123456789')").run();
+    db.prepare("INSERT INTO users (email, name, role, status, created_at) VALUES ('saver@example.com', 'Sam', 'member', 'active', ?)").run(new Date().toISOString());
+    db.prepare("INSERT INTO audit (at, user_id, email, action, detail) VALUES (?, NULL, 'saver@example.com', 'settings.change', 'apiKey')").run(new Date().toISOString());
+    db.close();
+
+    const second = await startServer(name);
+    second.stop();
+    await new Promise((r) => setTimeout(r, 400));
+    db = new DatabaseSync(path.join(second.dataDir, "scheduler.db"));
+    try {
+      const saver = db.prepare("SELECT anthropic_key FROM users WHERE email = 'saver@example.com'").get() as { anthropic_key: string };
+      assert.ok(saver.anthropic_key.startsWith("enc1:"), "now the saver's own, encrypted");
+      const admin = db.prepare("SELECT anthropic_key FROM users WHERE email = 'admin@example.com'").get() as { anthropic_key: string };
+      assert.equal(admin.anthropic_key, "", "not given to anyone else");
+      assert.equal((db.prepare("SELECT value FROM settings WHERE key = 'anthropic_api_key'").get() as { value: string }).value, "", "the shared copy is gone");
+      const moved = db.prepare("SELECT detail FROM audit WHERE action = 'claude.key-moved'").get() as { detail: string };
+      assert.match(moved.detail, /saver@example\.com/);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("sessions end on their own", () => {
   it("expire after 12 idle hours or 7 days in total", async () => {
     const db = new DatabaseSync(path.join(app.dataDir, "scheduler.db"));

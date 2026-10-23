@@ -185,6 +185,9 @@ for (const [column, ddl] of [
 
 const postColumns = (db.prepare("PRAGMA table_info(posts)").all() as { name: string }[]).map((c) => c.name);
 // More pictures after the first, as JSON: [{ file, source, alt }]. `media_file` / `source_path` / `alt_text` stay the first picture.
+// Each person's own Anthropic API key for "Draft with Claude" (encrypted like the other secrets).
+const userColumns = (db.prepare("PRAGMA table_info(users)").all() as { name: string }[]).map((c) => c.name);
+if (!userColumns.includes("anthropic_key")) db.exec("ALTER TABLE users ADD COLUMN anthropic_key TEXT NOT NULL DEFAULT ''");
 if (!postColumns.includes("extra_media")) db.exec("ALTER TABLE posts ADD COLUMN extra_media TEXT NOT NULL DEFAULT '[]'");
 if (!postColumns.includes("title")) db.exec("ALTER TABLE posts ADD COLUMN title TEXT NOT NULL DEFAULT ''");
 // The template a post was made from, so "due this week" can tell what has already been scheduled.
@@ -280,6 +283,12 @@ export function sealStoredSecrets(): number {
   for (const row of all("SELECT id, config FROM accounts")) {
     if (!isSealed(String(row.config))) {
       run("UPDATE accounts SET config = ? WHERE id = ?", seal(String(row.config)), row.id);
+      changed++;
+    }
+  }
+  for (const row of all("SELECT id, anthropic_key FROM users WHERE anthropic_key != ''")) {
+    if (!isSealed(String(row.anthropic_key))) {
+      run("UPDATE users SET anthropic_key = ? WHERE id = ?", seal(String(row.anthropic_key)), row.id);
       changed++;
     }
   }

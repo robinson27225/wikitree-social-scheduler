@@ -97,6 +97,13 @@ describe("a backup works on any host", () => {
 
   before(async () => {
     await buildHostA(hostA);
+    // A person's own Anthropic key, locked with host A's key like the other secrets.
+    const seed = new DatabaseSync(path.join(hostA, "scheduler.db"));
+    seed.prepare("INSERT INTO users (email, name, role, status, created_at, anthropic_key) VALUES ('person@example.com', 'P', 'member', 'active', ?, ?)").run(
+      new Date().toISOString(),
+      seal("sk-ant-personal-key-0123456789abcdef", keyA),
+    );
+    seed.close();
     const made = await createBackup({ dataDir: hostA, passphrase: PASS, backupDir: backups, dataKey: keyA });
     file = made.file;
     assert.equal(made.accounts, 1);
@@ -120,6 +127,7 @@ describe("a backup works on any host", () => {
     const snap = new DatabaseSync(path.join(out, "scheduler.db"), { readOnly: true });
     assert.equal((snap.prepare("SELECT value FROM settings WHERE key = 'anthropic_api_key'").get() as any).value, "sk-ant-portable-key");
     assert.ok(!isSealed((snap.prepare("SELECT config FROM accounts").get() as any).config));
+    assert.equal((snap.prepare("SELECT anthropic_key FROM users WHERE email = 'person@example.com'").get() as any).anthropic_key, "sk-ant-personal-key-0123456789abcdef", "personal keys are unlocked inside the backup too");
     snap.close();
   });
 
@@ -151,6 +159,9 @@ describe("a backup works on any host", () => {
     assert.ok(isSealed(stored));
     assert.doesNotThrow(() => openSecret(stored, keyB), "locked with host B's key");
     assert.throws(() => openSecret(stored, keyA), "not host A's");
+    const personal = (db.prepare("SELECT anthropic_key FROM users WHERE email = 'person@example.com'").get() as any).anthropic_key as string;
+    assert.ok(isSealed(personal), "a person's own key is locked again on the new host");
+    assert.equal(openSecret(personal, keyB), "sk-ant-personal-key-0123456789abcdef");
     db.close();
   });
 

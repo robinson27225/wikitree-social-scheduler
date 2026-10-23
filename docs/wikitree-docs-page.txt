@@ -111,7 +111,7 @@ In '''Settings''', press '''Test''' next to each account. A failure means just t
 |-
 | Pictures for Instagram and Threads || Access to the Cloudflare account || Settings > Image host: endpoint, bucket, public address, and an R2 API token. Press Test
 |-
-| Draft with Claude (optional) || An Anthropic API key || Settings > Claude. Posting works without it
+| Draft with Claude (optional) || Your own Anthropic API key || Click the Claude button at the top of the page and paste it. Everyone uses their own key, so the cost is never shared. Posting works without it
 |}
 
 == If the person who runs the server can't ==

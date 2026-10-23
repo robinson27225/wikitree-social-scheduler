@@ -62,7 +62,7 @@ Press **Test** next to each account in Settings. Green means it works. Red means
 | **TikTok** | Nothing to connect: it's a manual account (a "WikiTree on TikTok" account is already there; Settings > Add by hand > **TikTok (by hand)** re-creates it if removed) | Just be signed in to TikTok. At the post time the Queue has the text and video ready; you post it there and mark it posted, pasting the link |
 | **X, Reddit, YouTube Community** | Nothing to connect: these are manual accounts | Just be signed in to those sites |
 | **Image host** (Instagram and Threads pictures) | Access to the team's Cloudflare account | Settings > Image host: endpoint, bucket, public address, and an R2 API token. Press **Test** |
-| **Claude drafting** (optional) | An Anthropic API key | Settings > Claude |
+| **Claude drafting** (optional) | Your own Anthropic API key | Click **Claude: add API key** at the top of the page and paste it. Each person uses their own key, so nobody's drafts are billed to someone else. Posting works without it |
 
 Tokens made from a person's own Facebook login can stop working if that person leaves the Page, changes their password or is removed from the Meta app. That is the usual reason a Test fails; the fix is to reconnect.
 

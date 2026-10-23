@@ -196,6 +196,9 @@ function unsealSnapshot(file: string, dataKey: Buffer | null): void {
     for (const row of db.prepare("SELECT id, config FROM accounts").all() as { id: number; config: string }[]) {
       if (isSealed(row.config)) db.prepare("UPDATE accounts SET config = ? WHERE id = ?").run(unlock(row.config), row.id);
     }
+    for (const row of db.prepare("SELECT id, anthropic_key FROM users WHERE anthropic_key != ''").all() as { id: number; anthropic_key: string }[]) {
+      if (isSealed(row.anthropic_key)) db.prepare("UPDATE users SET anthropic_key = ? WHERE id = ?").run(unlock(row.anthropic_key), row.id);
+    }
     for (const row of db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[]) {
       if (isSealed(row.value)) db.prepare("UPDATE settings SET value = ? WHERE key = ?").run(unlock(row.value), row.key);
     }

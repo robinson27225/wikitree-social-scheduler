@@ -146,9 +146,38 @@ function renderChips() {
     );
   }
   chips.append(
-    el("span", { class: `chip ${state.status.claudeConfigured ? "" : "off"}` },
-      state.status.claudeConfigured ? "Claude ready" : "Claude: add API key"),
+    el("button", {
+      type: "button", class: `chip ${state.status.claudeConfigured ? "" : "off"}`, onclick: openClaudeKey,
+      title: "Your own Anthropic API key, used for Draft with Claude",
+    }, state.status.claudeConfigured ? "Claude ready" : "Claude: add API key"),
   );
+}
+
+// ---- each person's own Anthropic key
+
+async function openClaudeKey() {
+  let info;
+  try { info = await api("/api/me/claude"); } catch (e) { toast(e.message); return; }
+  $("claude-key-note").textContent = info.perPerson
+    ? "Draft with Claude uses your own key, so the cost is yours and nobody else's. Other people add their own."
+    : "Draft with Claude uses this key.";
+  $("claude-key-state").textContent = info.keySet ? "(saved)" : "";
+  $("claude-key-input").value = "";
+  $("claude-key-input").placeholder = info.keySet ? "•••••••• (saved, type to replace)" : "sk-ant-…";
+  $("claude-key-remove").hidden = !info.keySet;
+  say("claude-key-msg", "", true);
+  $("claude-key-dialog").showModal();
+}
+
+async function saveClaudeKey(apiKey) {
+  try {
+    await api("/api/me/claude", { method: "PUT", body: { apiKey } });
+    $("claude-key-dialog").close();
+    toast(apiKey ? "Your key is saved" : "Your key is removed");
+    await refreshStatus();
+  } catch (e) {
+    say("claude-key-msg", e.message, false);
+  }
 }
 
 async function refreshStatus() {
@@ -157,7 +186,7 @@ async function refreshStatus() {
   renderChips();
   $("draft-btn").disabled = !state.status.claudeConfigured;
   $("alt-btn").disabled = !state.status.claudeConfigured;
-  const hint = state.status.claudeConfigured ? "" : "Add your Anthropic API key in Settings to enable";
+  const hint = state.status.claudeConfigured ? "" : "Add your own Anthropic API key (the Claude button at the top) to enable";
   $("draft-btn").title = hint;
   $("alt-btn").title = hint;
 }
@@ -1191,6 +1220,8 @@ async function loadSettings() {
   $("set-model").value = s.claudeModel;
   $("set-grace").value = s.missedGraceMinutes;
   $("set-awake").checked = s.keepAwake;
+  $("shared-key-row").hidden = Boolean(s.perPersonKeys);
+  $("key-per-person").hidden = !s.perPersonKeys;
   $("set-key").value = "";
   $("set-key").placeholder = s.apiKeySet ? "•••••••• (saved, type to replace)" : "sk-ant-…";
   $("key-state").textContent = s.apiKeyFromEnv ? "(using ANTHROPIC_API_KEY from your environment)" : s.apiKeySet ? "(saved)" : "";
@@ -2095,6 +2126,14 @@ async function init() {
 
   $("channel-cancel").addEventListener("click", () => $("channel-dialog").close());
   $("add-channels-cancel").addEventListener("click", () => $("add-channels-dialog").close());
+  $("claude-key-cancel").addEventListener("click", () => $("claude-key-dialog").close());
+  $("claude-key-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const key = $("claude-key-input").value.trim();
+    if (!key) return say("claude-key-msg", "Paste your key, or press Cancel.", false);
+    saveClaudeKey(key);
+  });
+  $("claude-key-remove").addEventListener("click", () => { if (confirm("Remove your Anthropic key? You won't be able to use Draft with Claude until you add one again.")) saveClaudeKey(""); });
   $("add-channels-form").addEventListener("submit", saveAddChannels);
   $("channel-form").addEventListener("submit", saveChannel);
   $("edit-cancel").addEventListener("click", () => $("edit-dialog").close());

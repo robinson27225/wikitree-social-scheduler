@@ -1,17 +1,60 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { DEFAULT_STYLE_GUIDE, getSecretSetting, getSetting } from "./db.ts";
+import { config } from "./config.ts";
+import { DEFAULT_STYLE_GUIDE, get, getSecretSetting, getSetting, run, setSecretSetting } from "./db.ts";
+import { open, seal } from "./secretbox.ts";
 import { prepareImage, thumbnail } from "./images.ts";
 import { mediaKindOf } from "./media.ts";
 import { HttpError } from "./util.ts";
 
 export const DEFAULT_MODEL = "claude-opus-5-5";
 
-export function apiKey(): string {
-  return process.env.ANTHROPIC_API_KEY || getSecretSetting("anthropic_api_key");
+/**
+ * The Anthropic key to use for one person. On the shared server (Google sign-in) every person uses their own, so nobody's
+ * drafts are charged to someone else. On a single computer (no sign-in) there is just the one saved key.
+ */
+export function apiKeyFor(userId: number | null | undefined): string {
+  if (config.authMode !== "google") return process.env.ANTHROPIC_API_KEY || getSecretSetting("anthropic_api_key");
+  if (!userId) return "";
+  const row = get("SELECT anthropic_key FROM users WHERE id = ?", userId);
+  return row?.anthropic_key ? open(String(row.anthropic_key)) : "";
 }
 
-export function claudeConfigured(): boolean {
-  return apiKey() !== "";
+export function claudeConfiguredFor(userId: number | null | undefined): boolean {
+  return apiKeyFor(userId) !== "";
+}
+
+/** Saves (or, when empty, removes) a person's own key. Without a person (a single computer), it is the one saved key. */
+export function setApiKeyFor(userId: number | null | undefined, key: string): void {
+  const trimmed = key.trim();
+  if (trimmed && !/^sk-ant-[A-Za-z0-9_-]{16,}$/.test(trimmed)) {
+    throw new HttpError(400, "That doesn't look like an Anthropic API key. It starts with sk-ant- and is a single line, with no spaces.");
+  }
+  if (config.authMode !== "google") {
+    setSecretSetting("anthropic_api_key", trimmed);
+    return;
+  }
+  if (!userId) throw new HttpError(400, "Sign in with your own account to save a key.");
+  run("UPDATE users SET anthropic_key = ? WHERE id = ?", trimmed ? seal(trimmed) : "", userId);
+}
+
+/**
+ * From when one key was shared by everyone: the key moves to the person who saved it (the last person the activity log
+ * shows saving one, or else the longest-standing administrator), and the shared copy is deleted. Runs at start; does
+ * nothing once there is no shared key. Returns who it went to.
+ */
+export function moveSharedKeyToItsOwner(): string | null {
+  if (config.authMode !== "google") return null;
+  const shared = getSecretSetting("anthropic_api_key");
+  if (!shared) return null;
+  const saver = get("SELECT email FROM audit WHERE action = 'settings.change' AND detail LIKE '%apiKey%' ORDER BY id DESC LIMIT 1")?.email;
+  const owner =
+    (saver ? get("SELECT id, email, anthropic_key FROM users WHERE email = ? AND status = 'active'", String(saver)) : undefined) ??
+    get("SELECT id, email, anthropic_key FROM users WHERE role = 'admin' AND status = 'active' ORDER BY id LIMIT 1");
+  if (!owner) return null; // nobody to give it to yet: leave it until someone has signed in
+  if (!owner.anthropic_key) run("UPDATE users SET anthropic_key = ? WHERE id = ?", seal(shared), owner.id);
+  setSecretSetting("anthropic_api_key", "");
+  run("INSERT INTO audit (at, user_id, email, action, detail) VALUES (?, NULL, 'system', 'claude.key-moved', ?)", new Date().toISOString(), `The shared Anthropic key now belongs to ${owner.email}; everyone uses their own.`);
+  return String(owner.email);
 }
 
 export interface DraftRequest {
@@ -45,10 +88,12 @@ function systemPrompt(kind: DraftRequest["kind"]): string {
 }
 
 /** Asks Claude to look at the image and draft either post options or alt text. */
-export async function draft(req: DraftRequest): Promise<string[]> {
-  const key = apiKey();
+export async function draft(req: DraftRequest, userId: number | null | undefined): Promise<string[]> {
+  const key = apiKeyFor(userId);
   if (!key) {
-    throw new HttpError(400, "Add an Anthropic API key in Settings to use Draft with Claude.");
+    throw new HttpError(400, config.authMode === "google"
+      ? "Add your own Anthropic API key to use Draft with Claude: click “Claude: add API key” at the top of the page."
+      : "Add an Anthropic API key to use Draft with Claude: click “Claude: add API key” at the top of the page.");
   }
   if (!req.mediaPath && req.kind === "alt") throw new HttpError(400, "There's no image to describe.");
   if (!req.mediaPath && !req.brief.trim() && !req.currentText?.trim()) {
@@ -130,7 +175,7 @@ export async function draft(req: DraftRequest): Promise<string[]> {
 export function explainClaudeError(e: unknown): HttpError {
   if (e instanceof HttpError) return e;
   if (e instanceof Anthropic.AuthenticationError) {
-    return new HttpError(401, "The Anthropic API key was rejected. Check it in Settings.");
+    return new HttpError(401, "Anthropic rejected your API key. Click the Claude button at the top of the page to replace it.");
   }
   if (e instanceof Anthropic.RateLimitError) {
     return new HttpError(429, "Claude is rate limiting requests. Wait a moment and try again.");

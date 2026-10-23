@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { claudeConfigured, DEFAULT_MODEL, draft, explainClaudeError } from "./claude.ts";
+import { claudeConfiguredFor, DEFAULT_MODEL, draft, explainClaudeError, moveSharedKeyToItsOwner, setApiKeyFor } from "./claude.ts";
 import { addPending, completeConnect, completeWithToken, connectorViews, pendingView, saveAppCreds, startConnect } from "./connect.ts";
 import {
   all,
@@ -354,9 +354,9 @@ async function releaseServerCopies(postId: number): Promise<void> {
 
 // ---------------------------------------------------------------- status + settings
 
-app.get("/api/status", (_req, res) => {
+app.get("/api/status", (req, res) => {
   res.json({
-    claudeConfigured: claudeConfigured(),
+    claudeConfigured: claudeConfiguredFor(req.user?.id),
     keepAwake: isKeepingAwake(),
     platform: process.platform,
     maxUploadBytes: config.maxUploadBytes,
@@ -378,9 +378,24 @@ app.get("/api/settings", (_req, res) => {
     claudeModel: getSetting("claude_model", DEFAULT_MODEL) || DEFAULT_MODEL,
     missedGraceMinutes: Number(getSetting("missed_grace_minutes", "30")),
     keepAwake: getSetting("keep_awake", "true") === "true",
-    apiKeySet: getSecretSetting("anthropic_api_key") !== "",
-    apiKeyFromEnv: Boolean(process.env.ANTHROPIC_API_KEY),
+    // On the shared server every person has their own key (see /api/me/claude); the one shared key only exists on a single computer.
+    perPersonKeys: config.authMode === "google",
+    apiKeySet: config.authMode !== "google" && getSecretSetting("anthropic_api_key") !== "",
+    apiKeyFromEnv: config.authMode !== "google" && Boolean(process.env.ANTHROPIC_API_KEY),
   });
+});
+
+/** Whether the signed-in person has saved their own Anthropic key. The key itself is never sent back. */
+app.get("/api/me/claude", (req, res) => {
+  res.json({ keySet: claudeConfiguredFor(req.user?.id), perPerson: config.authMode === "google" });
+});
+
+/** Saves or (with an empty key) removes the signed-in person's own Anthropic key. Anyone signed in may; it only ever affects them. */
+app.put("/api/me/claude", (req, res) => {
+  const key = typeof req.body?.apiKey === "string" ? req.body.apiKey : "";
+  setApiKeyFor(req.user?.id, key);
+  audit(req, key.trim() ? "claude.key-saved" : "claude.key-removed", "");
+  res.json({ ok: true, keySet: claudeConfiguredFor(req.user?.id) });
 });
 
 app.put("/api/settings", requireAdmin, (req, res) => {
@@ -398,7 +413,8 @@ app.put("/api/settings", requireAdmin, (req, res) => {
     setSetting("keep_awake", String(keepAwake));
     setKeepAwake(keepAwake);
   }
-  if (typeof apiKey === "string") setSecretSetting("anthropic_api_key", apiKey.trim());
+  // The shared key only exists on a single computer; on the server each person saves their own.
+  if (typeof apiKey === "string" && config.authMode !== "google") setSecretSetting("anthropic_api_key", apiKey.trim());
   audit(req, "settings.change", Object.keys(req.body ?? {}).filter((k) => k !== "apiKey" && k !== "styleGuide").concat(typeof apiKey === "string" ? ["apiKey"] : [], typeof styleGuide === "string" ? ["styleGuide"] : []).join(", "));
   res.json({ ok: true });
 });
@@ -1155,7 +1171,7 @@ app.post("/api/draft", async (req, res) => {
       charLimit: limits.length ? Math.min(...limits) : 300,
       platforms: accounts.length ? accounts.map((a) => a.label) : ["social media"],
       currentText: String(currentText),
-    });
+    }, req.user?.id);
     res.json({ options });
   } catch (e) {
     throw explainClaudeError(e);
@@ -1184,6 +1200,7 @@ try {
 }
 
 if (config.authMode === "google") seedAdmins(config.adminEmails);
+moveSharedKeyToItsOwner();
 seedTemplates();
 seedWikiSettings();
 // The test suite turns this off (SEED_MANUAL_ACCOUNTS=off) so its servers start with no accounts at all.

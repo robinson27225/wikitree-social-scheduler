@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { claudeConfigured } from "./claude.ts";
+import { claudeConfiguredFor } from "./claude.ts";
 import { all, readConfig } from "./db.ts";
 import { providerFor } from "./providers/index.ts";
 import { backupStatus } from "./autobackup.ts";
@@ -149,7 +149,8 @@ export function buildBrief(now: Date = new Date()): Brief {
   }
   const needsImageHost = all("SELECT 1 FROM accounts WHERE kind IN ('instagram', 'threads', 'tiktok')").length > 0;
   if (needsImageHost && !getHostConfig()) warnings.push("The image host isn't set up, so Instagram, Threads and TikTok photos will fail.");
-  if (!claudeConfigured()) warnings.push("No Anthropic API key is saved, so Draft with Claude is off (posting is unaffected).");
+  // On the shared server each person has their own key, so there is nothing to warn about for the team as a whole.
+  if (config.authMode !== "google" && !claudeConfiguredFor(null)) warnings.push("No Anthropic API key is saved, so Draft with Claude is off (posting is unaffected).");
 
   if (config.authMode === "google") {
     // On the server, backups are automatic and go to a private bucket.

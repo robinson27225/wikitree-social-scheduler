@@ -272,7 +272,8 @@
 
           <div class="card">
             <h2>Claude</h2>
-            <label class="field">
+            <p class="muted small" id="key-per-person" hidden>Everyone uses their own Anthropic API key for Draft with Claude, so nobody's drafts are billed to someone else. Each person adds theirs by clicking the Claude button at the top of the page. The model and style guide below are shared.</p>
+            <label class="field" id="shared-key-row">
               <span>Anthropic API key <em class="muted" id="key-state"></em></span>
               <input id="set-key" type="password" autocomplete="off" placeholder="sk-ant-…" />
               <small class="muted">Stored only on this computer. Get one at console.anthropic.com (billed separately from a Claude subscription). You can also set ANTHROPIC_API_KEY in your environment.</small>
@@ -379,6 +380,26 @@
         <div class="row end">
           <button type="button" id="fill-cancel">Cancel</button>
           <button type="submit" class="primary" id="fill-use">Use this text</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="claude-key-dialog">
+      <form method="dialog" id="claude-key-form">
+        <h2>Your Claude API key</h2>
+        <p class="muted small" id="claude-key-note"></p>
+        <label class="field">
+          <span>Anthropic API key <em class="muted" id="claude-key-state"></em></span>
+          <input id="claude-key-input" type="password" autocomplete="off" placeholder="sk-ant-…" />
+          <small class="muted">Get one at console.anthropic.com (API usage is billed separately from a Claude subscription). It is stored encrypted and used only for your own drafts.</small>
+        </label>
+        <p id="claude-key-msg" class="small"></p>
+        <div class="row between">
+          <button type="button" id="claude-key-remove" class="danger">Remove my key</button>
+          <span class="row">
+            <button type="button" id="claude-key-cancel">Cancel</button>
+            <button type="submit" class="primary" id="claude-key-save">Save</button>
+          </span>
         </div>
       </form>
     </dialog>
