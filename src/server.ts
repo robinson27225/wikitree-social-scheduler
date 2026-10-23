@@ -39,6 +39,7 @@ import { audit, recentAudit } from "./audit.ts";
 import { config } from "./config.ts";
 import { readMemory, startMemorySampler } from "./resources.ts";
 import { listColumnSettings, saveColumnSettings, wikiRows } from "./wiki.ts";
+import { checkWtc, listChallenges, phaseLabel, saveWtcRows, WTC_PHASES, wtcRows, wtcTable } from "./wtc.ts";
 import { archiveInfo, checkArchivableMonth, clearMonth, collectStats, importTikTokCsv, monthBeforeLast, monthLabel, monthlyCsv, statsRows } from "./stats.ts";
 import { createTemplate, deleteTemplate, getTemplate, leftoverPlaceholders, listSkips, listTemplates, seedTemplates, seedWikiSettings, setSkip, updateTemplate } from "./templates.ts";
 import { seedManualAccounts } from "./seedAccounts.ts";
@@ -284,6 +285,7 @@ function postsWithTargets(whereSql = "", ...params: unknown[]) {
       })),
       libraryId: libraryIdOf(String(post.source_path)),
       templateId: post.template_id ?? null,
+      wtc: post.wtc_phase ? { challenge: post.wtc_challenge, phase: post.wtc_phase, phaseLabel: phaseLabel(String(post.wtc_phase)) } : null,
       scheduledAt: post.scheduled_at,
       targets: all(
         `SELECT t.id, t.status, t.mode, t.url, t.error, t.posted_at AS postedAt, t.external_id AS externalId, t.handed_off_at AS handedOffAt,
@@ -583,7 +585,8 @@ function checkMoreImages(raw: unknown, first: { id: number | null; kind: MediaKi
 }
 
 app.post("/api/posts", async (req, res) => {
-  const { libraryId, text, title = "", altText = "", scheduledAt, accountIds, overrides, templateId, templateValues, moreImages } = req.body ?? {};
+  const { libraryId, text, title = "", altText = "", scheduledAt, accountIds, overrides, templateId, templateValues, moreImages, wtc } = req.body ?? {};
+  const challenge = checkWtc(wtc);
   // No libraryId means a text-only post. It's stored with an empty media_file and source_path.
   const libraryItem = libraryId ? libraryFile(Number(libraryId)) : null;
   const source = libraryItem?.file ?? "";
@@ -613,7 +616,7 @@ app.post("/api/posts", async (req, res) => {
   }
 
   const post = run(
-    "INSERT INTO posts (text, title, alt_text, media_file, source_path, scheduled_at, created_at, template_id, template_values, extra_media) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO posts (text, title, alt_text, media_file, source_path, scheduled_at, created_at, template_id, template_values, extra_media, wtc_challenge, wtc_phase) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     fields.text,
     fields.title,
     fields.altText,
@@ -624,6 +627,8 @@ app.post("/api/posts", async (req, res) => {
     templateId && getTemplate(Number(templateId)) ? Number(templateId) : null,
     storedTemplateValues(templateValues),
     JSON.stringify(extraMedia),
+    challenge.challenge,
+    challenge.phase,
   );
   for (const { account, override } of channels) {
     const target = run(
@@ -722,6 +727,32 @@ app.patch("/api/posts/:id", async (req, res) => {
   }
   audit(req, "post.edit", `#${id}`);
   res.json({ ok: true });
+});
+
+/** Marks a post as being for a stage of a WikiTree Challenge (or clears it). Allowed at any time, even after it has gone out. */
+app.put("/api/posts/:id/wtc", (req, res) => {
+  const id = Number(req.params.id);
+  if (!get("SELECT id FROM posts WHERE id = ?", id)) throw new HttpError(404, "No such post.");
+  const challenge = checkWtc(req.body);
+  run("UPDATE posts SET wtc_challenge = ?, wtc_phase = ? WHERE id = ?", challenge.challenge, challenge.phase, id);
+  audit(req, "post.wtc", `#${id}: ${challenge.phase ? `${challenge.challenge} / ${challenge.phase}` : "cleared"}`);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------- the WikiTree Challenge's table
+
+app.get("/api/wtc", (_req, res) => {
+  res.json({ phases: WTC_PHASES.map(({ key, label }) => ({ key, label })), challenges: listChallenges(), rows: wtcRows() });
+});
+
+app.get("/api/wtc/table", (req, res) => {
+  res.json(wtcTable(String(req.query.challenge ?? "")));
+});
+
+app.put("/api/wtc/rows", (req, res) => {
+  saveWtcRows(req.body?.rows);
+  audit(req, "wtc.rows", "");
+  res.json({ ok: true, rows: wtcRows() });
 });
 
 app.delete("/api/posts/:id", async (req, res) => {
@@ -1183,6 +1214,13 @@ app.post("/api/draft", async (req, res) => {
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (error instanceof HttpError) {
     res.status(error.status).json({ error: error.message });
+    return;
+  }
+  // A request the browser or a tool got wrong (not JSON, too big): the sender's mistake, not a fault here.
+  const status = (error as { status?: number })?.status;
+  if (typeof status === "number" && status >= 400 && status < 500) {
+    const type = (error as { type?: string }).type;
+    res.status(status).json({ error: type === "entity.too.large" ? "That request is too large." : type === "entity.parse.failed" ? "That request wasn't valid JSON." : "That request wasn't understood." });
     return;
   }
   console.error(error);

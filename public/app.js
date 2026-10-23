@@ -21,6 +21,7 @@ const state = {
   skips: {}, // template id -> days (YYYY-MM-DD) it is skipped
   posts: [], // the latest list from the server, for "coming up"
   templateLink: null, // { id, name } while the post being written came from a template
+  wtc: { phases: [], challenges: [], rows: [] }, // the WikiTree Challenge table: its stages, the challenges so far, its row labels
 };
 
 // ------------------------------------------------------------------ helpers
@@ -178,6 +179,102 @@ async function saveClaudeKey(apiKey) {
   } catch (e) {
     say("claude-key-msg", e.message, false);
   }
+}
+
+// ---- WikiTree Challenge posts and their table
+
+async function loadWtc() {
+  try {
+    state.wtc = await api("/api/wtc");
+  } catch { /* the rest of the app still works */ }
+  for (const select of [$("wtc-phase"), $("wtc-post-phase")]) {
+    select.replaceChildren(...state.wtc.phases.map((p) => el("option", { value: p.key }, p.label)));
+  }
+  let last = null;
+  try { last = JSON.parse(localStorage.getItem("wtcLast") ?? "null"); } catch { /* ignore */ }
+  $("wtc-challenge").value = last?.challenge ?? state.wtc.challenges[0]?.name ?? "";
+  if (last?.phase) $("wtc-phase").value = last.phase;
+}
+
+function composeWtc() {
+  if (!$("wtc-on").checked) return null;
+  return { challenge: $("wtc-challenge").value.trim(), phase: $("wtc-phase").value };
+}
+
+/** After scheduling a challenge post, suggest the next stage for the next one and remember the challenge. */
+function afterWtcScheduled(sent) {
+  const keys = state.wtc.phases.map((p) => p.key);
+  const next = keys[Math.min(keys.indexOf(sent.phase) + 1, keys.length - 1)] ?? sent.phase;
+  $("wtc-phase").value = next;
+  $("wtc-on").checked = false;
+  $("wtc-fields").hidden = true;
+  try { localStorage.setItem("wtcLast", JSON.stringify({ challenge: sent.challenge, phase: next })); } catch { /* ignore */ }
+  loadWtc();
+}
+
+let wtcPost = null;
+function openWtcPost(post) {
+  wtcPost = post;
+  $("wtc-post-challenge").value = post.wtc?.challenge ?? $("wtc-challenge").value;
+  if (post.wtc) $("wtc-post-phase").value = post.wtc.phase;
+  $("wtc-post-clear").hidden = !post.wtc;
+  say("wtc-post-msg", "", true);
+  $("wtc-post-dialog").showModal();
+}
+
+async function saveWtcPost(body) {
+  try {
+    await api(`/api/posts/${wtcPost.id}/wtc`, { method: "PUT", body });
+    $("wtc-post-dialog").close();
+    toast(body.phase ? "Marked as a challenge post" : "No longer a challenge post");
+    await loadWtc();
+    loadQueue();
+  } catch (e) {
+    say("wtc-post-msg", e.message, false);
+  }
+}
+
+async function refreshWtcTable() {
+  const name = $("wtc-pick").value;
+  if (!name) {
+    $("wtc-text").value = "";
+    $("wtc-counts").textContent = "No posts are marked as challenge posts yet.";
+    return;
+  }
+  try {
+    const t = await api(`/api/wtc/table?challenge=${encodeURIComponent(name)}`);
+    $("wtc-text").value = t.markup;
+    $("wtc-counts").textContent = `${t.filled} cell${t.filled === 1 ? "" : "s"} filled from posts that went out, ${t.blank} still blank.`;
+    $("wtc-missing").textContent = t.missingLinks.length
+      ? `Posted by hand with no link pasted in, so left blank: ${t.missingLinks.join(", ")}. Use "Edit link" on the post in the Queue.`
+      : "";
+  } catch (e) {
+    $("wtc-missing").textContent = e.message;
+  }
+}
+
+function renderWtcRows() {
+  $("wtc-rows").replaceChildren(
+    ...state.wtc.rows.map((row) =>
+      el("fieldset", { class: "wtc-row", "data-column": row.column },
+        el("legend", {}, cap(row.column)),
+        ...[["image", "Picture file"], ["link", "Picture links to"], ["label", "Names under the picture"], ["placeholder", "A blank link looks like"]].map(([key, label]) =>
+          el("label", { class: "field" }, el("span", {}, label), el("input", { type: "text", "data-key": key, value: row[key] ?? "" }))),
+        el("input", { type: "hidden", "data-key": "match", value: row.match ?? "" }),
+      )),
+  );
+}
+
+async function openWtcTable(challenge) {
+  await loadWtc();
+  $("wtc-pick").replaceChildren(
+    ...state.wtc.challenges.map((c) => el("option", { value: c.name }, `${c.name} (${c.posted} of ${c.posts} posts out)`)),
+  );
+  if (challenge && state.wtc.challenges.some((c) => c.name === challenge)) $("wtc-pick").value = challenge;
+  renderWtcRows();
+  say("wtc-rows-msg", "", true);
+  $("wtc-dialog").showModal();
+  refreshWtcTable();
 }
 
 async function refreshStatus() {
@@ -653,6 +750,7 @@ async function schedule() {
         title: $("title-field").hidden ? "" : $("title").value,
         altText: state.selected.kind === "image" ? $("alt").value : "",
         moreImages: state.more.map((m) => ({ libraryId: m.id, altText: state.moreAlt[m.id] ?? "" })),
+        wtc: composeWtc(),
         scheduledAt: new Date(when).toISOString(),
         accountIds: checkedAccountIds(),
         overrides: skippedMedia(),
@@ -660,6 +758,8 @@ async function schedule() {
         templateValues: state.templateLink?.values ?? null,
       },
     });
+    const sentWtc = composeWtc();
+    if (sentWtc) afterWtcScheduled(sentWtc);
     setTemplateLink(null);
     say("schedule-msg", "", true);
     toast(`Scheduled for ${formatWhen(new Date(when).toISOString())}`);
@@ -813,7 +913,8 @@ function renderPost(post) {
     el("div", { class: "actions" },
       sharedEditable && el("button", { onclick: () => openEdit(post) }, "Edit shared text & time"),
       post.targets.some((t) => t.status === "posted") &&
-        el("button", { onclick: () => openWiki({ post: post.id }) }, "Wiki table row"),
+        el("button", { onclick: () => (post.wtc ? openWtcTable(post.wtc.challenge) : openWiki({ post: post.id })) }, post.wtc ? "Challenge table" : "Wiki table row"),
+      el("button", { class: post.wtc ? "" : "link", onclick: () => openWtcPost(post) }, post.wtc ? `Challenge: ${post.wtc.challenge}, ${post.wtc.phaseLabel}` : "Challenge post…"),
       state.accounts.some((a) => !post.targets.some((t) => t.accountId === a.id)) &&
         el("button", { onclick: () => openAddChannels(post) }, "Add channels"),
       post.targets.some((t) => PENDING.includes(t.status)) &&
@@ -1213,7 +1314,61 @@ $("stats-import").addEventListener("change", async (event) => {
 
 // ------------------------------------------------------------------ settings tab
 
+/**
+ * Turns each box on the Settings page into a section that opens and closes, remembering which are open. The Settings page
+ * is long, so only the sections in use stay open; a row of buttons at the top jumps to one and opens it.
+ */
+function makeSettingsCollapsible() {
+  const tab = $("tab-settings");
+  if (tab.dataset.collapsible) return;
+  tab.dataset.collapsible = "1";
+  let open = null;
+  try { open = JSON.parse(localStorage.getItem("settingsOpen") ?? "null"); } catch { /* ignore */ }
+  const openByDefault = new Set(open ?? ["Accounts"]);
+  const sections = [];
+  for (const card of [...tab.querySelectorAll(".card")]) {
+    const heading = card.querySelector(":scope > h2");
+    if (!heading) continue;
+    const title = heading.textContent.trim();
+    const details = document.createElement("details");
+    details.className = card.className;
+    details.hidden = card.hidden;
+    details.id = `settings-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+    details.open = openByDefault.has(title);
+    const summary = document.createElement("summary");
+    summary.append(heading);
+    details.append(summary, ...card.childNodes);
+    card.replaceWith(details);
+    details.addEventListener("toggle", () => {
+      const now = sections.filter((s) => s.details.open).map((s) => s.title);
+      try { localStorage.setItem("settingsOpen", JSON.stringify(now)); } catch { /* ignore */ }
+    });
+    sections.push({ title, details });
+  }
+  // Jump buttons and expand/collapse all, above the sections. Sections hidden for this person (team-only) are skipped.
+  const bar = el("div", { class: "settings-bar" },
+    ...sections.map((s) => el("button", {
+      type: "button", class: "chip-button", "data-for": s.details.id,
+      onclick: () => { s.details.open = true; s.details.scrollIntoView({ behavior: "smooth", block: "start" }); },
+    }, s.title)),
+    el("span", { class: "spacer" }),
+    el("button", { type: "button", class: "link", onclick: () => sections.forEach((s) => (s.details.open = true)) }, "Expand all"),
+    el("button", { type: "button", class: "link", onclick: () => sections.forEach((s) => (s.details.open = false)) }, "Collapse all"),
+  );
+  tab.querySelector(".cards").before(bar);
+  refreshSettingsBar();
+}
+
+/** Hides the jump buttons for sections this person can't see. */
+function refreshSettingsBar() {
+  for (const button of document.querySelectorAll("#tab-settings .settings-bar [data-for]")) {
+    const section = $(button.dataset.for);
+    button.hidden = !section || section.hidden;
+  }
+}
+
 async function loadSettings() {
+  makeSettingsCollapsible();
   state.settings = await api("/api/settings");
   const s = state.settings;
   $("set-style").value = s.styleGuide;
@@ -1230,6 +1385,7 @@ async function loadSettings() {
   const teamShown = state.me.mode === "google";
   for (const card of document.querySelectorAll(".team-only")) card.hidden = !teamShown;
   for (const card of document.querySelectorAll(".admin-only")) card.hidden = false;
+  refreshSettingsBar();
   await Promise.all([loadConnectors(), loadHost(), teamShown ? loadTeam() : null, teamShown ? loadBackup() : null, loadActivity()]);
 }
 
@@ -2074,6 +2230,30 @@ async function init() {
   $("acc-kind").addEventListener("change", renderProviderFields);
   // wiki table rows
   $("wiki-recent").addEventListener("click", () => openWiki({ days: 7 }));
+  $("wtc-open").addEventListener("click", () => openWtcTable(null));
+  $("wtc-on").addEventListener("change", () => { $("wtc-fields").hidden = !$("wtc-on").checked; });
+  $("wtc-pick").addEventListener("change", refreshWtcTable);
+  $("wtc-close").addEventListener("click", () => $("wtc-dialog").close());
+  $("wtc-copy").addEventListener("click", () => copyToClipboard($("wtc-text").value));
+  $("wtc-post-cancel").addEventListener("click", () => $("wtc-post-dialog").close());
+  $("wtc-post-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveWtcPost({ challenge: $("wtc-post-challenge").value.trim(), phase: $("wtc-post-phase").value });
+  });
+  $("wtc-post-clear").addEventListener("click", () => saveWtcPost({ challenge: "", phase: "" }));
+  $("wtc-rows-save").addEventListener("click", async () => {
+    const rows = [...document.querySelectorAll("#wtc-rows .wtc-row")].map((box) => {
+      const row = { column: box.dataset.column };
+      for (const input of box.querySelectorAll("input[data-key]")) row[input.dataset.key] = input.value;
+      return row;
+    });
+    try {
+      const r = await api("/api/wtc/rows", { method: "PUT", body: { rows } });
+      state.wtc.rows = r.rows;
+      say("wtc-rows-msg", "Saved.", true);
+      refreshWtcTable();
+    } catch (e) { say("wtc-rows-msg", e.message, false); }
+  });
   $("wiki-close").addEventListener("click", () => $("wiki-dialog").close());
   $("wiki-copy").addEventListener("click", () => copyToClipboard($("wiki-text").value));
 
@@ -2165,6 +2345,7 @@ async function init() {
   await Promise.all([refreshStatus(), refreshAccounts()]);
   await loadLibrary();
   await loadTemplates().catch(() => {});
+  await loadWtc();
   refreshQueueBadge();
 
   let tab = "schedule";

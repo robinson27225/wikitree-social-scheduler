@@ -158,7 +158,7 @@ export function wikiRows(filter: PostFilter, options: WikiOptions = {}): WikiRow
        FROM posts p
        JOIN targets t ON t.post_id = p.id
        JOIN accounts a ON a.id = t.account_id
-      WHERE t.status = 'posted'
+      WHERE t.status = 'posted' AND p.wtc_phase = ''
       ORDER BY p.scheduled_at, p.id, t.id`,
   );
   const byPost = new Map<number, typeof rows>();

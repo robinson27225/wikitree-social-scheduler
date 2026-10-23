@@ -433,6 +433,48 @@ describe("posts with several pictures", () => {
   });
 });
 
+describe("WikiTree Challenge posts", () => {
+  let channel: number;
+  before(async () => {
+    channel = await addAccount("dryrun", "Challenge channel");
+  });
+
+  it("marks a post for a stage of a challenge, when scheduling and afterwards", async () => {
+    const bad = await call("POST", "/api/posts", { text: "WTC", scheduledAt: later(120), accountIds: [channel], wtc: { challenge: "WTC 12", phase: "someday" } });
+    assert.equal(bad.status, 400);
+    const made = await call("POST", "/api/posts", { text: "Kick-off day", scheduledAt: later(120), accountIds: [channel], wtc: { challenge: "WTC 12", phase: "kickoff" } });
+    assert.equal(made.status, 200, JSON.stringify(made.json));
+    const post = await latestPost();
+    assert.deepEqual(post.wtc, { challenge: "WTC 12", phase: "kickoff", phaseLabel: "Kick-Off" });
+
+    const plain = await call("POST", "/api/posts", { text: "An everyday post", scheduledAt: later(130), accountIds: [channel] });
+    const other = (await call("GET", "/api/posts")).json.find((p: any) => p.id === plain.json.id);
+    assert.equal(other.wtc, null);
+    assert.equal((await call("PUT", `/api/posts/${other.id}/wtc`, { challenge: "WTC 12", phase: "chat" })).status, 200);
+    assert.equal((await call("GET", "/api/posts")).json.find((p: any) => p.id === other.id).wtc.phaseLabel, "Chat");
+    assert.equal((await call("PUT", `/api/posts/${other.id}/wtc`, { challenge: "", phase: "" })).status, 200, "clearing it");
+    const garbage = await fetch(`${base}/api/posts/${other.id}/wtc`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: "{not json" });
+    assert.equal(garbage.status, 400, "a malformed request is the sender's mistake, not a server fault");
+    assert.equal((await call("GET", "/api/posts")).json.find((p: any) => p.id === other.id).wtc, null);
+    assert.equal((await call("PUT", "/api/posts/99999/wtc", { challenge: "WTC 12", phase: "chat" })).status, 404);
+  });
+
+  it("builds the table from the posts that went out, and saves edits to the row labels", async () => {
+    const post = await latestPost();
+    await call("POST", `/api/targets/${post.targets[0].id}/post-now`, {});
+    const info = (await call("GET", "/api/wtc")).json;
+    assert.equal(info.phases.length, 10);
+    assert.equal(info.rows.length, 9);
+    assert.ok(info.challenges.some((c: any) => c.name === "WTC 12"));
+    const table = (await call("GET", "/api/wtc/table?challenge=WTC%2012")).json;
+    assert.match(table.markup, /^\{\| border="1" /);
+    assert.equal((await call("GET", "/api/wtc/table")).status, 400);
+    const rows = info.rows.map((r: any) => ({ ...r, label: r.column === "reddit" ? "r/wikitree<br>@someone" : r.label }));
+    assert.equal((await call("PUT", "/api/wtc/rows", { rows })).status, 200);
+    assert.ok((await call("GET", "/api/wtc/table?challenge=WTC%2012")).json.markup.includes("<!---reddit--->r/wikitree<br>@someone"));
+  });
+});
+
 describe("the media library", () => {
   const png = () => sharp({ create: { width: 64, height: 48, channels: 3, background: "#aa3311" } }).png().toBuffer();
 

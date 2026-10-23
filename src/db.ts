@@ -188,6 +188,9 @@ const postColumns = (db.prepare("PRAGMA table_info(posts)").all() as { name: str
 // Each person's own Anthropic API key for "Draft with Claude" (encrypted like the other secrets).
 const userColumns = (db.prepare("PRAGMA table_info(users)").all() as { name: string }[]).map((c) => c.name);
 if (!userColumns.includes("anthropic_key")) db.exec("ALTER TABLE users ADD COLUMN anthropic_key TEXT NOT NULL DEFAULT ''");
+// A WikiTree Challenge post: which challenge, and which stage of it (see wtc.ts). Both empty for an ordinary post.
+if (!postColumns.includes("wtc_challenge")) db.exec("ALTER TABLE posts ADD COLUMN wtc_challenge TEXT NOT NULL DEFAULT ''");
+if (!postColumns.includes("wtc_phase")) db.exec("ALTER TABLE posts ADD COLUMN wtc_phase TEXT NOT NULL DEFAULT ''");
 if (!postColumns.includes("extra_media")) db.exec("ALTER TABLE posts ADD COLUMN extra_media TEXT NOT NULL DEFAULT '[]'");
 if (!postColumns.includes("title")) db.exec("ALTER TABLE posts ADD COLUMN title TEXT NOT NULL DEFAULT ''");
 // The template a post was made from, so "due this week" can tell what has already been scheduled.

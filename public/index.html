@@ -87,6 +87,15 @@
             </div>
             <div id="options" class="options" hidden></div>
 
+            <div class="field" id="wtc-field">
+              <label class="check"><input type="checkbox" id="wtc-on" /> <span>This is a WikiTree Challenge post</span></label>
+              <div id="wtc-fields" class="row wrap" hidden>
+                <input id="wtc-challenge" type="text" maxlength="40" placeholder="Which challenge, e.g. WTC 12" aria-label="Which challenge" />
+                <select id="wtc-phase" aria-label="Which stage of the challenge"></select>
+              </div>
+              <small class="muted">It then goes in the Challenge's own table (channels down the side, stages across) instead of the everyday one.</small>
+            </div>
+
             <label class="field" id="title-field" hidden>
               <span id="title-label">Title</span>
               <input id="title" type="text" />
@@ -136,6 +145,7 @@
       <section id="tab-queue" class="tab" hidden>
         <div class="row end">
           <button id="wiki-recent">Wiki table rows (last 7 days)</button>
+          <button id="wtc-open">Challenge table</button>
           <a class="button" href="/api/export/published" download>⬇ Published posts (CSV, with each platform's post ID)</a>
         </div>
         <div id="queue"></div>
@@ -365,6 +375,44 @@
         <div class="row end">
           <button type="button" id="wiki-copy">Copy</button>
           <button type="button" id="wiki-close" class="primary">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="wtc-post-dialog">
+      <form method="dialog" id="wtc-post-form">
+        <h2>Challenge post</h2>
+        <p class="muted small">Say which stage of which WikiTree Challenge this post is for. It then goes in the Challenge's table instead of the everyday one.</p>
+        <label class="field"><span>Challenge</span><input id="wtc-post-challenge" type="text" maxlength="40" placeholder="e.g. WTC 12" /></label>
+        <label class="field"><span>Stage</span><select id="wtc-post-phase"></select></label>
+        <p id="wtc-post-msg" class="small"></p>
+        <div class="row between">
+          <button type="button" id="wtc-post-clear" class="danger">Not a challenge post</button>
+          <span class="row">
+            <button type="button" id="wtc-post-cancel">Cancel</button>
+            <button type="submit" class="primary">Save</button>
+          </span>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="wtc-dialog" class="wide">
+      <form method="dialog" id="wtc-form">
+        <h2>WikiTree Challenge table</h2>
+        <p class="muted small">Channels down the side and the stages of the challenge across. A cell with a post that went out has its link; the rest are the usual blank links, ready for the post id. Mark posts as challenge posts when you schedule them, or with the "Challenge post" button in the Queue.</p>
+        <label class="field"><span>Challenge</span><select id="wtc-pick"></select></label>
+        <p id="wtc-counts" class="muted small"></p>
+        <p id="wtc-missing" class="small err"></p>
+        <label class="field"><span>Wiki markup</span><textarea id="wtc-text" rows="16" spellcheck="false"></textarea></label>
+        <details id="wtc-rows-box">
+          <summary>The first cell of each row (picture, link and names)</summary>
+          <p class="muted small">These change a little from one challenge to the next, for example the host's name. Saved for next time. The Reddit picture is a stand-in until you choose its file.</p>
+          <div id="wtc-rows"></div>
+          <div class="row"><button type="button" id="wtc-rows-save">Save these</button><span id="wtc-rows-msg" class="small"></span></div>
+        </details>
+        <div class="row end">
+          <button type="button" id="wtc-copy">Copy</button>
+          <button type="button" id="wtc-close" class="primary">Close</button>
         </div>
       </form>
     </dialog>
