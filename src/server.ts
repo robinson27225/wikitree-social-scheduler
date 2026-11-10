@@ -41,7 +41,7 @@ import { audit, AUDIT_KEEP_DAYS, pruneAudit, recentAudit } from "./audit.ts";
 import { config } from "./config.ts";
 import { readMemory, startMemorySampler } from "./resources.ts";
 import { listColumnSettings, saveColumnSettings, wikiRows } from "./wiki.ts";
-import { checkWtc, listChallenges, phaseLabel, saveWtcRows, WTC_PHASES, wtcRows, wtcTable } from "./wtc.ts";
+import { checkWtc, listChallenges, phaseLabel, removeBuiltInGuestTags, saveWtcRows, WTC_PHASES, wtcRows, wtcTable } from "./wtc.ts";
 import { archiveInfo, checkArchivableMonth, clearMonth, collectStats, importTikTokCsv, monthBeforeLast, monthLabel, monthlyCsv, statsRows } from "./stats.ts";
 import { createTemplate, deleteTemplate, getTemplate, leftoverPlaceholders, listSkips, listTemplates, seedTemplates, seedWikiSettings, setSkip, updateTemplate } from "./templates.ts";
 import { seedManualAccounts } from "./seedAccounts.ts";
@@ -720,21 +720,31 @@ app.patch("/api/posts/:id", async (req, res) => {
   const post = get("SELECT * FROM posts WHERE id = ?", id);
   if (!post) throw new HttpError(404, "No such post.");
   const targets = all(
-    `SELECT t.status, t.text_override, t.title_override, t.alt_override, t.no_media, a.kind, a.label, a.config
+    `SELECT t.id, t.status, t.text_override, t.title_override, t.alt_override, t.no_media, a.kind, a.label, a.config
        FROM targets t JOIN accounts a ON a.id = t.account_id WHERE t.post_id = ?`,
     id,
   );
-  if (targets.some((t) => t.status === "posted" || t.status === "posting")) {
-    throw new HttpError(409, "Part of this post has already gone out. Edit the channels that haven't been posted from their own Edit button.");
+  if (targets.some((t) => t.status === "posting")) {
+    throw new HttpError(409, "One channel of this post is going out right now. Try again in a moment.");
   }
+  // Channels that have gone out are a record of what was posted, and stay exactly as they are. The edit is for the rest.
+  const gone = targets.filter((t) => t.status === "posted");
+  const remaining = targets.filter((t) => t.status !== "posted");
+  if (remaining.length === 0) throw new HttpError(409, "Every channel of this post has already gone out, so there is nothing left to change.");
   const { text = post.text, title = post.title ?? "", altText = post.alt_text, scheduledAt = post.scheduled_at } = req.body ?? {};
   const kind = post.media_file ? mediaKindOf(post.media_file) : null;
   const fields = await validatePost(
     { text, title, altText: kind === "image" ? altText : "", scheduledAt },
-    targets.map((t) => ({ account: t as unknown as Channel["account"], override: overrideOfRow(t) })),
+    remaining.map((t) => ({ account: t as unknown as Channel["account"], override: overrideOfRow(t) })),
     { kind },
   );
   await releaseServerCopies(id); // validated first, so we never cancel anything for an edit that gets rejected
+  // A channel that already went out with the shared text keeps that text as its own, so its record doesn't change with the edit.
+  for (const t of gone) {
+    if (t.text_override == null && fields.text !== post.text) run("UPDATE targets SET text_override = ? WHERE id = ?", post.text, t.id);
+    if (t.title_override == null && fields.title !== (post.title ?? "")) run("UPDATE targets SET title_override = ? WHERE id = ?", post.title ?? "", t.id);
+    if (t.alt_override == null && fields.altText !== post.alt_text) run("UPDATE targets SET alt_override = ? WHERE id = ?", post.alt_text, t.id);
+  }
   run(
     "UPDATE posts SET text = ?, title = ?, alt_text = ?, scheduled_at = ? WHERE id = ?",
     fields.text,
@@ -750,7 +760,7 @@ app.patch("/api/posts/:id", async (req, res) => {
   for (const target of all("SELECT id FROM targets WHERE post_id = ? AND status = 'scheduled'", id)) {
     await placeTarget(Number(target.id));
   }
-  audit(req, "post.edit", `#${id}`);
+  audit(req, "post.edit", `#${id}${gone.length ? ` (the ${remaining.length} channel${remaining.length === 1 ? "" : "s"} not yet posted)` : ""}`);
   res.json({ ok: true });
 });
 
@@ -1267,6 +1277,7 @@ if (config.authMode === "google") seedAdmins(config.adminEmails);
 moveSharedKeyToItsOwner();
 seedTemplates();
 seedWikiSettings();
+removeBuiltInGuestTags();
 // The test suite turns this off (SEED_MANUAL_ACCOUNTS=off) so its servers start with no accounts at all.
 if (process.env.SEED_MANUAL_ACCOUNTS !== "off") seedManualAccounts();
 {

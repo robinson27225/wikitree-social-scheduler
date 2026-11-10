@@ -135,6 +135,7 @@ async function schedule(accountIds: number[], extra: Record<string, unknown> = {
 }
 
 const latestPost = async () => (await call("GET", "/api/posts")).json[0];
+const postById = async (id: number) => ((await call("GET", "/api/posts")).json as any[]).find((p) => p.id === id);
 const targetOf = (post: any, label: string) => post.targets.find((t: any) => t.accountLabel === label);
 
 describe("per-channel changes to a post", () => {
@@ -288,10 +289,57 @@ describe("per-channel changes to a post", () => {
     assert.match(refused.json.error, /already gone out/);
 
     assert.equal((await call("PATCH", `/api/targets/${open.id}`, { text: "still fine" })).status, 200);
-    // The shared post can't be rewritten once part of it is out, and says where to go instead.
-    const shared = await call("PATCH", `/api/posts/${post.id}`, { text: "rewrite everything" });
-    assert.equal(shared.status, 409);
-    assert.match(shared.json.error, /Edit the channels that haven't been posted/);
+  });
+
+  it("edits the shared text and time for the channels still to go, leaving what was posted exactly as it was", async () => {
+    const third = await addAccount("dryrun", "Third stand-in");
+    const made = await schedule([mastodon, bluesky, third], { text: "Original shared text", altText: "Original alt" });
+    assert.equal(made.status, 200, JSON.stringify(made.json));
+    const post = await latestPost();
+    const done = targetOf(post, "Mastodon stand-in");
+    await call("POST", `/api/targets/${done.id}/post-now`, {});
+    const sentBefore = logLines().at(-1);
+    assert.equal(sentBefore.text, "Original shared text");
+
+    const when = later(100); // earlier than other tests' posts, which look for "the newest"
+    const edit = await call("PATCH", `/api/posts/${post.id}`, { text: "Rewritten for the rest", altText: "New alt", scheduledAt: when });
+    assert.equal(edit.status, 200, JSON.stringify(edit.json));
+
+    const after = await postById(post.id);
+    assert.equal(after.text, "Rewritten for the rest");
+    assert.equal(after.scheduledAt, new Date(when).toISOString());
+    const posted = targetOf(after, "Mastodon stand-in");
+    assert.equal(posted.status, "posted");
+    assert.equal(posted.text, "Original shared text", "the record of what went out is unchanged");
+    assert.equal(posted.altText, "Original alt");
+    for (const label of ["Bluesky stand-in", "Third stand-in"]) {
+      const t = targetOf(after, label);
+      assert.equal(t.text, "Rewritten for the rest", label);
+      assert.equal(t.customText, false, "still following the shared text");
+      assert.equal(t.status, "scheduled");
+    }
+    // and they really post the new text
+    await call("POST", `/api/targets/${targetOf(after, "Third stand-in").id}/post-now`, {});
+    assert.equal(logLines().at(-1).text, "Rewritten for the rest");
+    assert.equal(logLines().at(-1).alt, "New alt");
+  });
+
+  it("keeps a remaining channel's own text, checks the rest against their limits, and refuses once everything is out", async () => {
+    await schedule([mastodon, bluesky], { text: "Shared" });
+    const post = await latestPost();
+    await call("POST", `/api/targets/${targetOf(post, "Mastodon stand-in").id}/post-now`, {});
+    const open = targetOf(post, "Bluesky stand-in");
+    await call("PATCH", `/api/targets/${open.id}`, { text: "Bluesky's own words" });
+
+    const tooLong = await call("PATCH", `/api/posts/${post.id}`, { text: "x".repeat(300) });
+    assert.equal(tooLong.status, 200, "the only channel left has its own text, so the shared length doesn't matter to it");
+    assert.equal(targetOf(await postById(post.id), "Bluesky stand-in").text, "Bluesky's own words");
+    assert.equal(targetOf(await postById(post.id), "Mastodon stand-in").text, "Shared", "posted channel keeps what it posted");
+
+    await call("POST", `/api/targets/${open.id}/post-now`, {});
+    const nothingLeft = await call("PATCH", `/api/posts/${post.id}`, { text: "too late" });
+    assert.equal(nothingLeft.status, 409);
+    assert.match(nothingLeft.json.error, /nothing left to change/);
   });
 });
 

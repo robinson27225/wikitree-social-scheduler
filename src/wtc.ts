@@ -1,4 +1,4 @@
-import { all, getJsonSetting, setJsonSetting } from "./db.ts";
+import { all, getJsonSetting, getSetting, setJsonSetting, setSetting } from "./db.ts";
 import { columnFor, wikiLink } from "./wiki.ts";
 import { HttpError } from "./util.ts";
 
@@ -41,21 +41,44 @@ export interface WtcRow {
   match?: string;
 }
 
-/** The layout from the last challenge. Hosts' names change from one challenge to the next, so these are editable. */
+/**
+ * The layout of the challenge's table. Each row names WikiTree's own account only: a guest's tags differ from one challenge
+ * to the next, so they are added (if wanted) in the editable first cells, never built in.
+ */
 export const DEFAULT_ROWS: WtcRow[] = [
-  { column: "facebook", image: "PFWC-1.png", link: "https://www.facebook.com/WikiTreeOfficial", label: "@WikiTreeOfficial<br>@bbettinger", placeholder: "https://www.facebook.com/WikiTreeOfficial/posts//" },
-  { column: "twitter", image: "PFWC-23.png", link: "https://twitter.com/WTChallenge", label: "@WTChallenge<br>", placeholder: "https://x.com/WTChallenge/status//", match: "challenge|wtc" },
-  { column: "mastodon", image: "PFWC-12.png", link: "https://genealysis.social/@wikitree", label: "@WikiTree<br>@blainebettinger", placeholder: "https://genealysis.social/@wikitree//" },
-  { column: "bluesky", image: "PFWC-30.png", link: "https://bsky.app/profile/wikitree.bsky.social", label: "@WikiTree<br>@blainebettinger.bsky.social", placeholder: "https://bsky.app/profile/wikitree.bsky.social/post//" },
-  { column: "linkedin", image: "PFWC-4.png", link: "https://www.linkedin.com/company/wikitree/", label: "@WikiTree<br>@blainebettinger", placeholder: "https://www.linkedin.com/feed/update/urn:li:activity:/" },
-  { column: "instagram", image: "PFWC-2.png", link: "https://www.instagram.com/wikitreers/", label: "@WikiTreers<br>@blainebettinger", placeholder: "https://www.instagram.com/p//" },
-  { column: "threads", image: "PFWC-31.png", link: "https://www.threads.net/@wikitreers", label: "@WikiTreers<br>@blainebettinger", placeholder: "https://www.threads.net/@wikitreers/post//" },
-  { column: "youtube", image: "PFWC-6.png", link: "https://www.youtube.com/wikitreers/", label: "@WikiTreers<br>@BlaineBettinger", placeholder: "https://www.youtube.com/post//" },
-  { column: "reddit", image: "PFWC-39.png", link: "https://www.reddit.com/r/wikitree/", label: "r/wikitree<br>", placeholder: "https://www.reddit.com/r/wikitree/comments//" },
+  { column: "facebook", image: "PFWC-1.png", link: "https://www.facebook.com/WikiTreeOfficial", label: "@WikiTreeOfficial", placeholder: "https://www.facebook.com/WikiTreeOfficial/posts//" },
+  { column: "twitter", image: "PFWC-23.png", link: "https://twitter.com/WTChallenge", label: "@WTChallenge", placeholder: "https://x.com/WTChallenge/status//", match: "challenge|wtc" },
+  { column: "mastodon", image: "PFWC-12.png", link: "https://genealysis.social/@wikitree", label: "@WikiTree", placeholder: "https://genealysis.social/@wikitree//" },
+  { column: "bluesky", image: "PFWC-30.png", link: "https://bsky.app/profile/wikitree.bsky.social", label: "@WikiTree", placeholder: "https://bsky.app/profile/wikitree.bsky.social/post//" },
+  { column: "linkedin", image: "PFWC-4.png", link: "https://www.linkedin.com/company/wikitree/", label: "@WikiTree", placeholder: "https://www.linkedin.com/feed/update/urn:li:activity:/" },
+  { column: "instagram", image: "PFWC-2.png", link: "https://www.instagram.com/wikitreers/", label: "@WikiTreers", placeholder: "https://www.instagram.com/p//" },
+  { column: "threads", image: "PFWC-31.png", link: "https://www.threads.net/@wikitreers", label: "@WikiTreers", placeholder: "https://www.threads.net/@wikitreers/post//" },
+  { column: "youtube", image: "PFWC-6.png", link: "https://www.youtube.com/wikitreers/", label: "@WikiTreers", placeholder: "https://www.youtube.com/post//" },
+  { column: "reddit", image: "PFWC-39.png", link: "https://www.reddit.com/r/wikitree/", label: "r/wikitree", placeholder: "https://www.reddit.com/r/wikitree/comments//" },
 ];
 
 const SETTING = "wtc_rows";
 const COLUMNS = new Set(DEFAULT_ROWS.map((r) => r.column));
+
+/** One guest's tags were built into the first version of these rows. Takes them out of anything saved from then, once. */
+export function removeBuiltInGuestTags(): number {
+  if (getSetting("wtc_guest_tags_removed") === "true") return 0;
+  setSetting("wtc_guest_tags_removed", "true");
+  const saved = getJsonSetting<Partial<WtcRow>[]>(SETTING, []);
+  let changed = 0;
+  for (const row of saved) {
+    if (typeof row.label !== "string") continue;
+    const tag = /(?:<br\s*\/?>)?\s*@b(?:laine)?bettinger[\w.]*/gi;
+    if (!tag.test(row.label)) continue; // nothing of his here: leave the label exactly as it was typed
+    const cleaned = row.label.replace(tag, "").replace(/(?:<br\s*\/?>)+$/i, "").trim();
+    if (cleaned !== row.label) {
+      row.label = cleaned;
+      changed++;
+    }
+  }
+  if (changed) setJsonSetting(SETTING, saved);
+  return changed;
+}
 
 /** The saved rows laid over the defaults, always in the table's order. */
 export function wtcRows(): WtcRow[] {

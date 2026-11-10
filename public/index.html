@@ -351,8 +351,8 @@
 
     <dialog id="edit-dialog">
       <form method="dialog" id="edit-form">
-        <h2>Edit the shared text and time</h2>
-        <p class="muted small">This changes the text shared by every channel that hasn't customised its own. Use a channel's own Edit button to change just that channel.</p>
+        <h2 id="edit-heading">Edit the shared text and time</h2>
+        <p class="muted small" id="edit-note"></p>
         <label class="field" id="edit-title-field" hidden><span>Title</span><input id="edit-title" type="text" /></label>
         <label class="field"><span>Post text</span><textarea id="edit-text" rows="6"></textarea></label>
         <label class="field" id="edit-alt-field"><span>Alt text</span><textarea id="edit-alt" rows="2"></textarea></label>
@@ -406,7 +406,7 @@
         <label class="field"><span>Wiki markup</span><textarea id="wtc-text" rows="16" spellcheck="false"></textarea></label>
         <details id="wtc-rows-box">
           <summary>The first cell of each row (picture, link and names)</summary>
-          <p class="muted small">These change a little from one challenge to the next, for example the host's name. Saved for next time. </p>
+          <p class="muted small">Each row names WikiTree's own account. To tag this challenge's guest, add their name after it (use &lt;br&gt; for a new line). Saved for next time. </p>
           <div id="wtc-rows"></div>
           <div class="row"><button type="button" id="wtc-rows-save">Save these</button><span id="wtc-rows-msg" class="small"></span></div>
         </details>

@@ -902,7 +902,9 @@ async function markPostedByHand(target) {
 }
 
 function renderPost(post) {
-  const sharedEditable = post.targets.every((t) => t.status !== "posted" && t.status !== "posting");
+  // The shared text and time can be changed for whatever hasn't gone out yet; channels already posted keep what they posted.
+  const somePosted = post.targets.some((t) => t.status === "posted");
+  const sharedEditable = post.targets.some((t) => PENDING.includes(t.status)) && !post.targets.some((t) => t.status === "posting");
   const thumb = post.mediaUrl
     ? el("div", { class: "thumbwrap", style: "position:relative" },
         el("img", { src: post.mediaUrl, alt: "" }),
@@ -918,7 +920,7 @@ function renderPost(post) {
       el("div", { class: "channels" }, post.targets.map((t) => renderChannel(post, t))),
     ),
     el("div", { class: "actions" },
-      sharedEditable && el("button", { onclick: () => openEdit(post) }, "Edit shared text & time"),
+      sharedEditable && el("button", { onclick: () => openEdit(post) }, somePosted ? "Edit text & time for the rest" : "Edit shared text & time"),
       post.targets.some((t) => t.status === "posted") &&
         el("button", { onclick: () => (post.wtc ? openWtcTable(post.wtc.challenge) : openWiki({ post: post.id })) }, post.wtc ? "Challenge table" : "Wiki table row"),
       el("button", { class: post.wtc ? "" : "link", onclick: () => openWtcPost(post) }, post.wtc ? `Challenge: ${post.wtc.challenge}, ${post.wtc.phaseLabel}` : "Challenge post…"),
@@ -1089,6 +1091,12 @@ function openEdit(post) {
   $("edit-title").value = post.title ?? "";
   $("edit-title-field").hidden = !(post.title || post.targets.some((t) => ["reddit", "youtube", "tiktok"].includes(t.kind)));
   $("edit-when").value = toLocalInput(new Date(post.scheduledAt));
+  const left = post.targets.filter((t) => PENDING.includes(t.status));
+  const out = post.targets.filter((t) => t.status === "posted");
+  $("edit-heading").textContent = out.length ? "Edit the text and time for the channels still to go" : "Edit the shared text and time";
+  $("edit-note").textContent = out.length
+    ? `Already posted and left exactly as they are: ${out.map((t) => t.accountLabel).join(", ")}. This changes ${left.map((t) => t.accountLabel).join(", ")}${left.some((t) => t.customText) ? " (a channel with its own text keeps it; use that channel's Edit button)" : ""}.`
+    : "This changes the text shared by every channel that hasn't customised its own. Use a channel's own Edit button to change just that channel.";
   say("edit-msg", "", true);
   $("edit-dialog").showModal();
 }

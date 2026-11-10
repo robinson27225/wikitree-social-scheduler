@@ -8,7 +8,8 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wtc-test-"));
 process.env.SOCIAL_SCHEDULER_DATA = dir;
 
 const { run } = await import("../src/db.ts");
-const { checkWtc, DEFAULT_ROWS, listChallenges, saveWtcRows, WTC_PHASES, wtcRows, wtcTable } = await import("../src/wtc.ts");
+const { checkWtc, DEFAULT_ROWS, listChallenges, removeBuiltInGuestTags, saveWtcRows, WTC_PHASES, wtcRows, wtcTable } = await import("../src/wtc.ts");
+const { setJsonSetting, setSetting } = await import("../src/db.ts");
 const { wikiRows } = await import("../src/wiki.ts");
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -56,8 +57,8 @@ describe("the WikiTree Challenge table", () => {
     assert.equal(lines.at(-1), "|}");
     assert.equal(lines.filter((l) => l === "|-").length, 9, "eight channels and Reddit");
     assert.equal(lines[3], "|align=center width=65|{{Image|file=PFWC-1.png|size=50");
-    assert.equal(lines[4], "|link=https://www.facebook.com/WikiTreeOfficial}}<!---facebook--->@WikiTreeOfficial<br>@bbettinger");
-    assert.ok(markup.includes("|align=center|{{Image|file=PFWC-23.png|size=50\n|link=https://twitter.com/WTChallenge}}<!---twitter--->@WTChallenge<br>"));
+    assert.equal(lines[4], "|link=https://www.facebook.com/WikiTreeOfficial}}<!---facebook--->@WikiTreeOfficial");
+    assert.ok(markup.includes("|align=center|{{Image|file=PFWC-23.png|size=50\n|link=https://twitter.com/WTChallenge}}<!---twitter--->@WTChallenge\n"));
     assert.ok(markup.includes("<!---reddit--->r/wikitree"), "Reddit has its row");
     assert.ok(markup.indexOf("<!---reddit--->") > markup.indexOf("<!---youtube--->"), "after the existing rows");
     // every cell is the usual blank link
@@ -140,5 +141,32 @@ describe("the WikiTree Challenge table", () => {
     assert.throws(() => saveWtcRows([{ ...rows[0], match: "(" }]), /valid pattern/);
     assert.throws(() => saveWtcRows([{ ...rows[0], label: "two\nlines" }]), /one line/);
     assert.throws(() => saveWtcRows("nope"), /list/);
+  });
+
+  it("names only WikiTree's own accounts: no guest's tags are built in", () => {
+    for (const row of DEFAULT_ROWS) assert.ok(!/bettinger/i.test(row.label) && !/<br>$/.test(row.label), row.label);
+    assert.deepEqual(DEFAULT_ROWS.map((r) => r.label), ["@WikiTreeOfficial", "@WTChallenge", "@WikiTree", "@WikiTree", "@WikiTree", "@WikiTreers", "@WikiTreers", "@WikiTreers", "r/wikitree"]);
+  });
+
+  it("takes the old built-in guest's tags out of rows saved earlier, once, leaving anything else as it was", () => {
+    setJsonSetting("wtc_rows", [
+      { column: "facebook", label: "@WikiTreeOfficial<br>@bbettinger" },
+      { column: "bluesky", label: "@WikiTree<br>@blainebettinger.bsky.social" },
+      { column: "youtube", label: "@WikiTreers<br>@BlaineBettinger" },
+      { column: "twitter", label: "@WTChallenge<br>" },
+      { column: "reddit", label: "r/wikitree<br>@someoneelse" },
+    ]);
+    setSetting("wtc_guest_tags_removed", "");
+    assert.equal(removeBuiltInGuestTags(), 3);
+    const labels = Object.fromEntries(wtcRows().map((r) => [r.column, r.label]));
+    assert.equal(labels.facebook, "@WikiTreeOfficial");
+    assert.equal(labels.bluesky, "@WikiTree");
+    assert.equal(labels.youtube, "@WikiTreers");
+    assert.equal(labels.twitter, "@WTChallenge<br>", "not his, so left alone");
+    assert.equal(labels.reddit, "r/wikitree<br>@someoneelse", "another guest's tag, added by hand, stays");
+    assert.ok(!/bettinger/i.test(wtcTable("WTC 12").markup));
+    // a guest added by hand later is never stripped
+    setJsonSetting("wtc_rows", [{ column: "facebook", label: "@WikiTreeOfficial<br>@bbettinger" }]);
+    assert.equal(removeBuiltInGuestTags(), 0, "only once");
   });
 });
