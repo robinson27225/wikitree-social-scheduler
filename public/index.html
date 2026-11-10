@@ -71,6 +71,7 @@
                 <button id="remove-image" type="button" class="link">Post without it</button>
               </div>
             </div>
+            <div id="alt-picture" hidden></div>
             <div id="more-pictures" hidden>
               <p id="more-pictures-hint" class="muted small"></p>
               <ul class="more-list"></ul>
@@ -490,6 +491,12 @@
           <span id="channel-nomedia-label">Post this channel without the image</span>
         </label>
         <small class="muted" id="channel-nomedia-why"></small>
+
+        <label class="check" id="channel-altimage-row" hidden style="margin-top:10px">
+          <input type="checkbox" id="channel-altimage" />
+          <span>Post the picture instead of the video on this channel</span>
+        </label>
+        <small class="muted" id="channel-altimage-why"></small>
 
         <p id="channel-msg" class="small"></p>
         <div class="row end">

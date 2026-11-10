@@ -27,13 +27,14 @@ import {
 } from "./db.ts";
 import { buildBrief } from "./brief.ts";
 import { thumbnail } from "./images.ts";
-import { deleteFromLibrary, extraImagesOf, libraryFile, libraryIdOf, listLibrary, KEEP_POSTED_MEDIA_DAYS, MAX_IMAGES_PER_POST, pruneMissingFiles, pruneOldMedia, pruneOrphanMedia, saveUpload, sourceRef, thumbKey } from "./library.ts";
+import { altImageOf, deleteFromLibrary, extraImagesOf, libraryFile, otherFilesOf, libraryIdOf, listLibrary, KEEP_POSTED_MEDIA_DAYS, MAX_IMAGES_PER_POST, pruneMissingFiles, pruneOldMedia, pruneOrphanMedia, saveUpload, sourceRef, thumbKey } from "./library.ts";
 import { mediaKindOf, type MediaKind } from "./media.ts";
 import { getHostConfig, publicHostSettings, saveHostConfig, testHost } from "./publicHost.ts";
 import { isKeepingAwake, setKeepAwake } from "./keepawake.ts";
 import { providerFor, providers, publicConfig } from "./providers/index.ts";
 import type { Config } from "./providers/types.ts";
-import { markPosted, placeTarget, publishTarget, releaseServerCopy, schedulerHealth, setHandedOff, setPostedLink, startScheduler, unmarkPosted } from "./scheduler.ts";
+import { markPosted, placeTarget, publishTarget, releaseServerCopy, schedulerHealth, setByHand, setHandedOff, setPostedLink, startScheduler, unmarkPosted } from "./scheduler.ts";
+import { handPostUrl } from "./handpost.ts";
 import { errMsg, HttpError } from "./util.ts";
 import { activeSessionCounts, authRoutes, requireAdmin, requireAuth } from "./auth.ts";
 import { backupStatus, checkDisk, diskUsage, maybeRunNightly, runBackup } from "./autobackup.ts";
@@ -174,12 +175,16 @@ interface Override {
   noMedia: boolean;
   /** YouTube: use the video's first frame as its thumbnail. */
   thumbFirstFrame: boolean;
+  /** The person will post this channel by hand, though the app could. */
+  byHand: boolean;
+  /** On a post with a video: this channel shows the post's picture instead. */
+  useAltImage: boolean;
 }
 
 function cleanOverride(raw: unknown): Override {
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);
-  return { text: str(o.text), title: str(o.title), altText: str(o.altText), noMedia: o.noMedia === true, thumbFirstFrame: o.thumbFirstFrame === true };
+  return { text: str(o.text), title: str(o.title), altText: str(o.altText), noMedia: o.noMedia === true, thumbFirstFrame: o.thumbFirstFrame === true, byHand: o.byHand === true, useAltImage: o.useAltImage === true };
 }
 
 function overrideOfRow(t: Record<string, any>): Override {
@@ -189,6 +194,8 @@ function overrideOfRow(t: Record<string, any>): Override {
     altText: t.alt_override ?? null,
     noMedia: Boolean(t.no_media),
     thumbFirstFrame: Boolean(t.thumb_first_frame),
+    byHand: Boolean(t.by_hand),
+    useAltImage: Boolean(t.use_alt_media),
   };
 }
 
@@ -205,7 +212,8 @@ interface Channel {
 async function validatePost(
   fields: { text: unknown; title: unknown; altText: unknown; scheduledAt: unknown },
   channels: Channel[],
-  media: { kind: MediaKind | null; file?: string; extraFiles?: string[] },
+  /** `alt` is the picture a video post carries for channels that show a picture instead (its file, when it should be checked). */
+  media: { kind: MediaKind | null; file?: string; extraFiles?: string[]; alt?: { file?: string } | null },
 ) {
   const { text, title, altText, scheduledAt } = fields;
   if (typeof text !== "string" || text.trim() === "") throw new HttpError(400, "Write some text for the post.");
@@ -226,7 +234,9 @@ async function validatePost(
     if (unfilled.length) {
       throw new HttpError(400, `${account.label}: the text still has ${unfilled[0]} to fill in${unfilled.length > 1 ? ` (and ${unfilled.length - 1} more)` : ""}.`);
     }
-    const effectiveKind = override.noMedia ? null : media.kind;
+    // What this channel will really post: nothing, the picture it shows instead of the video, or the post's own media.
+    const usesAlt = !override.noMedia && override.useAltImage && Boolean(media.alt) && media.kind === "video";
+    const effectiveKind = override.noMedia ? null : usesAlt ? "image" : media.kind;
 
     if ((override.altText ?? "").length > 1500) throw new HttpError(400, `${account.label}: alt text is limited to 1500 characters.`);
 
@@ -239,7 +249,7 @@ async function validatePost(
 
     // Manual accounts may be given their title later, in the Queue, so only automatic platforms insist now.
     const needsTitle = provider.needsTitleFor ? provider.needsTitleFor(config) : provider.needsTitle;
-    if (needsTitle === "required" && !provider.manual && effectiveTitle === "") {
+    if (needsTitle === "required" && !provider.manual && !override.byHand && effectiveTitle === "") {
       throw new HttpError(400, `${account.label} needs a title.`);
     }
     const titleLimit = provider.titleLimit?.(config);
@@ -247,7 +257,12 @@ async function validatePost(
       throw new HttpError(400, `Title too long for ${account.label}: ${effectiveTitle.length} of ${titleLimit} characters.`);
     }
 
-    if (media.file && effectiveKind && provider.validateMedia) {
+    if (usesAlt) {
+      if (media.alt?.file && provider.validateMedia) {
+        const problem = await provider.validateMedia(media.alt.file, "image", config);
+        if (problem) throw new HttpError(400, `${account.label}: ${problem}`);
+      }
+    } else if (media.file && effectiveKind && provider.validateMedia) {
       // Every picture the channel will actually post: the first, and as many more as it takes.
       const cap = provider.maxImages?.(config) ?? 1;
       const files = [media.file, ...(effectiveKind === "image" ? (media.extraFiles ?? []).slice(0, Math.max(cap - 1, 0)) : [])];
@@ -270,7 +285,9 @@ function postsWithTargets(whereSql = "", ...params: unknown[]) {
   const posts = all(`SELECT * FROM posts ${whereSql} ORDER BY scheduled_at DESC, id DESC`, ...params);
   return posts.map((post) => {
     const postKind = post.media_file ? mediaKindOf(post.media_file) : null;
+    const savedAlt = altImageOf(post.alt_media);
     const mediaRemoved = Boolean(post.media_file) && post.scheduled_at < oldCutoff && !fsSync.existsSync(path.join(MEDIA_DIR, path.basename(post.media_file)));
+    const postAlt = mediaRemoved ? null : savedAlt;
     return {
       id: post.id,
       text: post.text,
@@ -283,6 +300,8 @@ function postsWithTargets(whereSql = "", ...params: unknown[]) {
       mediaRemoved,
       mediaKind: postKind,
       // The pictures after the first, in order, each with its own description.
+      // The picture a video post carries for channels that show a picture instead of the video.
+      altMedia: postAlt ? { file: postAlt.file, url: `/api/media-thumb/${encodeURIComponent(postAlt.file)}`, altText: postAlt.alt, libraryId: libraryIdOf(postAlt.source) } : null,
       extraMedia: (mediaRemoved ? [] : extraImagesOf(post.extra_media)).map((e) => ({
         file: e.file,
         url: `/api/media-thumb/${encodeURIComponent(e.file)}`,
@@ -295,12 +314,13 @@ function postsWithTargets(whereSql = "", ...params: unknown[]) {
       scheduledAt: post.scheduled_at,
       targets: all(
         `SELECT t.id, t.status, t.mode, t.url, t.error, t.posted_at AS postedAt, t.external_id AS externalId, t.handed_off_at AS handedOffAt,
-                t.text_override, t.title_override, t.alt_override, t.no_media, t.thumb_first_frame,
+                t.text_override, t.title_override, t.alt_override, t.no_media, t.thumb_first_frame, t.by_hand, t.use_alt_media,
                 t.account_id AS accountId, a.label AS accountLabel, a.kind, a.config AS accountConfig
            FROM targets t JOIN accounts a ON a.id = t.account_id
           WHERE t.post_id = ? ORDER BY t.id`,
         post.id,
-      ).map(({ accountConfig, text_override, title_override, alt_override, no_media, thumb_first_frame, handedOffAt, ...target }) => {
+      ).map(({ accountConfig, text_override, title_override, alt_override, no_media, thumb_first_frame, by_hand, use_alt_media, handedOffAt, ...target }) => {
+        const usesAlt = Boolean(use_alt_media) && !no_media && postAlt !== null;
         const provider = providerFor(String(target.kind));
         const config: Config = readConfig(String(accountConfig));
         // What this channel will actually post: its own text/title/alt/media if it has them, else the post's.
@@ -311,8 +331,12 @@ function postsWithTargets(whereSql = "", ...params: unknown[]) {
           ...target,
           text,
           title,
-          altText: String(alt_override ?? post.alt_text),
+          altText: String(alt_override ?? (usesAlt ? postAlt!.alt : post.alt_text)),
           noMedia: Boolean(no_media),
+          // On a post with a video: this channel shows the post's picture instead.
+          useAltImage: usesAlt,
+          // Whether it could: the platform must take pictures at all.
+          altImageRefusal: postAlt ? provider.accepts("image", config) : null,
           thumbFirstFrame: Boolean(thumb_first_frame),
           handedOff: handedOffAt != null,
           customText: text_override != null,
@@ -325,7 +349,10 @@ function postsWithTargets(whereSql = "", ...params: unknown[]) {
           // Why this channel can't drop the media, and why it can't take it, so the edit form can say so.
           textOnlyRefusal: provider.accepts(null, config),
           mediaRefusal: postKind ? provider.accepts(postKind, config) : null,
-          manualUrl: provider.manual ? provider.manual.openUrl(config, { text, title }) : null,
+          // Posted by a person: an account with no API, or a channel switched to "by hand" for this post.
+          manual: Boolean(provider.manual) || Boolean(by_hand),
+          byHand: Boolean(by_hand),
+          manualUrl: provider.manual ? provider.manual.openUrl(config, { text, title }) : by_hand ? handPostUrl(String(target.kind), config) || null : null,
         };
       }),
     };
@@ -556,8 +583,8 @@ app.get("/api/media/:file", async (req, res) => {
     let id = post ? libraryIdOf(String(post.source_path)) : null;
     if (!post) {
       // Not a post's first picture: it may be one of the extra pictures of a post.
-      for (const row of all("SELECT extra_media FROM posts WHERE extra_media LIKE ?", `%${name}%`)) {
-        const extra = extraImagesOf(row.extra_media).find((e) => e.file === name);
+      for (const row of all("SELECT extra_media, alt_media FROM posts WHERE extra_media LIKE ? OR alt_media LIKE ?", `%${name}%`, `%${name}%`)) {
+        const extra = otherFilesOf(row).find((e) => e.file === name);
         if (extra) id = libraryIdOf(extra.source);
       }
     }
@@ -580,6 +607,37 @@ app.get("/api/posts", (req, res) => {
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
   res.json(postsWithTargets("WHERE scheduled_at >= ? OR EXISTS (SELECT 1 FROM targets t WHERE t.post_id = posts.id AND t.status != 'posted')", since));
 });
+
+/** Adds one channel to a post and decides who will send it (the platform's own schedule where possible). */
+async function addTarget(postId: number, account: { id?: number; kind: string }, override: Override): Promise<void> {
+  const target = run(
+    `INSERT INTO targets (post_id, account_id, text_override, title_override, alt_override, no_media, thumb_first_frame, by_hand, use_alt_media)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    postId,
+    account.id!,
+    override.text,
+    override.title,
+    override.altText,
+    override.noMedia ? 1 : 0,
+    account.kind === "youtube" && override.thumbFirstFrame ? 1 : 0,
+    // An account with no API is always by hand; the flag is for the ones the app could post to.
+    override.byHand && !providerFor(account.kind).manual ? 1 : 0,
+    override.useAltImage && !override.noMedia ? 1 : 0,
+  );
+  await placeTarget(Number(target.lastInsertRowid));
+}
+
+/** The picture a video post may carry for channels that show a picture instead: only with a video, and only a picture. */
+function checkAltImage(raw: unknown, first: { kind: MediaKind | null }): { item: ReturnType<typeof libraryFile>; alt: string } | null {
+  if (raw === undefined || raw === null) return null;
+  const entry = raw as { libraryId?: unknown; altText?: unknown };
+  if (first.kind !== "video") throw new HttpError(400, "A picture to use instead of the video only makes sense on a post with a video.");
+  const item = libraryFile(Number(entry.libraryId));
+  if (mediaKindOf(item.file) !== "image") throw new HttpError(400, `${item.row.name}: choose a picture to use instead of the video.`);
+  const alt = typeof entry.altText === "string" ? entry.altText.trim() : "";
+  if (alt.length > 1500) throw new HttpError(400, "Alt text is limited to 1500 characters.");
+  return { item, alt };
+}
 
 /** Keeps the post's own copy of a library file, so renaming, moving or deleting the original later can't break a scheduled post. */
 async function keepCopy(source: string): Promise<string> {
@@ -610,24 +668,26 @@ function checkMoreImages(raw: unknown, first: { id: number | null; kind: MediaKi
 }
 
 app.post("/api/posts", async (req, res) => {
-  const { libraryId, text, title = "", altText = "", scheduledAt, accountIds, overrides, templateId, templateValues, moreImages, wtc } = req.body ?? {};
+  const { libraryId, text, title = "", altText = "", scheduledAt, accountIds, overrides, templateId, templateValues, moreImages, wtc, altImage } = req.body ?? {};
   const challenge = checkWtc(wtc);
   // No libraryId means a text-only post. It's stored with an empty media_file and source_path.
   const libraryItem = libraryId ? libraryFile(Number(libraryId)) : null;
   const source = libraryItem?.file ?? "";
   const kind = source ? mediaKindOf(source) : null;
   const more = checkMoreImages(moreImages, { id: libraryItem ? Number(libraryItem.row.id) : null, kind });
+  const instead = checkAltImage(altImage, { kind });
   const accounts = loadAccounts(accountIds);
   // Each channel may skip the media or carry its own text/title/alt text. A post with no media has nothing to skip.
   const channels: Channel[] = accounts.map((account) => {
     const override = cleanOverride(overrides?.[account.id]);
     if (!source) override.noMedia = false;
+    if (!instead) override.useAltImage = false;
     return { account: account as Channel["account"], override };
   });
   const fields = await validatePost(
     { text, title, altText: kind === "image" ? altText : "", scheduledAt },
     channels,
-    { kind, file: source || undefined, extraFiles: more.map((m) => m.item.file) },
+    { kind, file: source || undefined, extraFiles: more.map((m) => m.item.file), alt: instead ? { file: instead.item.file } : null },
   );
   if (Date.parse(fields.scheduledAt) < Date.now() - 60_000) {
     throw new HttpError(400, "That time has already passed. Pick a time in the future.");
@@ -639,9 +699,10 @@ app.post("/api/posts", async (req, res) => {
   for (const m of more) {
     extraMedia.push({ file: await keepCopy(m.item.file), source: sourceRef(Number(m.item.row.id)), alt: m.alt });
   }
+  const altMedia = instead ? JSON.stringify({ file: await keepCopy(instead.item.file), source: sourceRef(Number(instead.item.row.id)), alt: instead.alt }) : "";
 
   const post = run(
-    "INSERT INTO posts (text, title, alt_text, media_file, source_path, scheduled_at, created_at, template_id, template_values, extra_media, wtc_challenge, wtc_phase) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO posts (text, title, alt_text, media_file, source_path, scheduled_at, created_at, template_id, template_values, extra_media, wtc_challenge, wtc_phase, alt_media) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     fields.text,
     fields.title,
     fields.altText,
@@ -654,20 +715,9 @@ app.post("/api/posts", async (req, res) => {
     JSON.stringify(extraMedia),
     challenge.challenge,
     challenge.phase,
+    altMedia,
   );
-  for (const { account, override } of channels) {
-    const target = run(
-      "INSERT INTO targets (post_id, account_id, text_override, title_override, alt_override, no_media, thumb_first_frame) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      post.lastInsertRowid,
-      account.id,
-      override.text,
-      override.title,
-      override.altText,
-      override.noMedia ? 1 : 0,
-      account.kind === "youtube" && override.thumbFirstFrame ? 1 : 0,
-    );
-    await placeTarget(Number(target.lastInsertRowid)); // hands it to the platform's own scheduler where possible
-  }
+  for (const { account, override } of channels) await addTarget(Number(post.lastInsertRowid), account, override);
   audit(req, "post.schedule", `#${post.lastInsertRowid} for ${fields.scheduledAt} on ${channels.map((c) => c.account.label).join(", ")}`);
   res.json({ id: Number(post.lastInsertRowid) });
 });
@@ -683,9 +733,11 @@ app.post("/api/posts/:id/channels", async (req, res) => {
   if (dup) throw new HttpError(409, `${dup.label} is already on this post.`);
 
   const kind = post.media_file ? mediaKindOf(post.media_file) : null;
+  const postAlt = altImageOf(post.alt_media);
   const channels: Channel[] = accounts.map((account) => {
     const override = cleanOverride(req.body?.overrides?.[account.id]);
     if (!post.media_file) override.noMedia = false;
+    if (!postAlt) override.useAltImage = false;
     return { account: account as Channel["account"], override };
   });
   // The same checks as when the post was first scheduled, using the post's own text, title and picture.
@@ -696,21 +748,10 @@ app.post("/api/posts/:id/channels", async (req, res) => {
       kind,
       file: post.media_file ? path.join(MEDIA_DIR, post.media_file) : undefined,
       extraFiles: extraImagesOf(post.extra_media).map((e) => path.join(MEDIA_DIR, e.file)),
+      alt: postAlt ? { file: path.join(MEDIA_DIR, postAlt.file) } : null,
     },
   );
-  for (const { account, override } of channels) {
-    const target = run(
-      "INSERT INTO targets (post_id, account_id, text_override, title_override, alt_override, no_media, thumb_first_frame) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      id,
-      account.id,
-      override.text,
-      override.title,
-      override.altText,
-      override.noMedia ? 1 : 0,
-      account.kind === "youtube" && override.thumbFirstFrame ? 1 : 0,
-    );
-    await placeTarget(Number(target.lastInsertRowid));
-  }
+  for (const { account, override } of channels) await addTarget(id, account, override);
   audit(req, "post.add-channels", `#${id}: ${channels.map((c) => c.account.label).join(", ")}`);
   res.json({ ok: true, added: channels.length });
 });
@@ -720,7 +761,7 @@ app.patch("/api/posts/:id", async (req, res) => {
   const post = get("SELECT * FROM posts WHERE id = ?", id);
   if (!post) throw new HttpError(404, "No such post.");
   const targets = all(
-    `SELECT t.id, t.status, t.text_override, t.title_override, t.alt_override, t.no_media, a.kind, a.label, a.config
+    `SELECT t.id, t.status, t.text_override, t.title_override, t.alt_override, t.no_media, t.by_hand, t.use_alt_media, a.kind, a.label, a.config
        FROM targets t JOIN accounts a ON a.id = t.account_id WHERE t.post_id = ?`,
     id,
   );
@@ -736,7 +777,7 @@ app.patch("/api/posts/:id", async (req, res) => {
   const fields = await validatePost(
     { text, title, altText: kind === "image" ? altText : "", scheduledAt },
     remaining.map((t) => ({ account: t as unknown as Channel["account"], override: overrideOfRow(t) })),
-    { kind },
+    { kind, alt: altImageOf(post.alt_media) ? {} : null },
   );
   await releaseServerCopies(id); // validated first, so we never cancel anything for an edit that gets rejected
   // A channel that already went out with the shared text keeps that text as its own, so its record doesn't change with the edit.
@@ -802,7 +843,7 @@ app.delete("/api/posts/:id", async (req, res) => {
     run("DELETE FROM posts WHERE id = ?", id);
     // A text-only post has no media_file; rm of "" would target the whole media folder.
     if (post.media_file) await fs.rm(path.join(MEDIA_DIR, path.basename(post.media_file)), { force: true });
-    for (const extra of extraImagesOf(post.extra_media)) await fs.rm(path.join(MEDIA_DIR, path.basename(extra.file)), { force: true });
+    for (const extra of otherFilesOf(post)) await fs.rm(path.join(MEDIA_DIR, path.basename(extra.file)), { force: true });
   }
   audit(req, "post.cancel", `#${id}`);
   res.json({ ok: true });
@@ -812,7 +853,7 @@ app.delete("/api/posts/:id", async (req, res) => {
 app.patch("/api/targets/:id", async (req, res) => {
   const id = Number(req.params.id);
   const t = get(
-    `SELECT t.id, t.status, t.mode, t.post_id, t.text_override, t.title_override, t.alt_override, t.no_media,
+    `SELECT t.id, t.status, t.mode, t.post_id, t.text_override, t.title_override, t.alt_override, t.no_media, t.by_hand, t.use_alt_media,
             a.kind, a.label, a.config
        FROM targets t JOIN accounts a ON a.id = t.account_id WHERE t.id = ?`,
     id,
@@ -830,24 +871,29 @@ app.patch("/api/targets/:id", async (req, res) => {
     title: "title" in body ? body.title : current.title,
     altText: "altText" in body ? body.altText : current.altText,
     noMedia: "noMedia" in body ? body.noMedia : current.noMedia,
+    useAltImage: "useAltImage" in body ? body.useAltImage : current.useAltImage,
+    byHand: current.byHand,
   });
   if (!post.media_file) next.noMedia = false;
+  const postAlt = altImageOf(post.alt_media);
+  if (!postAlt || next.noMedia) next.useAltImage = false;
 
   const kind = post.media_file ? mediaKindOf(post.media_file) : null;
   await validatePost(
     { text: post.text, title: post.title ?? "", altText: kind === "image" ? post.alt_text : "", scheduledAt: post.scheduled_at },
     [{ account: t as unknown as Channel["account"], override: next }],
-    { kind },
+    { kind, alt: postAlt ? { file: path.join(MEDIA_DIR, postAlt.file) } : null },
   );
 
   // If a platform is holding this one, take it back first (nothing changes if that fails), then hand the new version over.
   if (t.mode === "remote" && t.status === "scheduled") await releaseOne({ id, label: String(t.label) });
   run(
-    "UPDATE targets SET text_override = ?, title_override = ?, alt_override = ?, no_media = ? WHERE id = ?",
+    "UPDATE targets SET text_override = ?, title_override = ?, alt_override = ?, no_media = ?, use_alt_media = ? WHERE id = ?",
     next.text,
     next.title,
     next.altText,
     next.noMedia ? 1 : 0,
+    next.useAltImage ? 1 : 0,
     id,
   );
   if (t.status === "scheduled") await placeTarget(id);
@@ -884,6 +930,16 @@ app.post("/api/targets/:id/handed-off", (req, res) => {
   const outcome = setHandedOff(id, req.body?.undo !== true);
   if (!outcome.ok) throw new HttpError(outcome.reason === "No such post." ? 404 : 409, outcome.reason);
   audit(req, req.body?.undo === true ? "post.not-scheduled-there" : "post.scheduled-there", `target #${id}`);
+  res.json({ ok: true });
+});
+
+/** Any channel: "I'll post this one by hand" (or, with undo, hand it back to the app). */
+app.post("/api/targets/:id/by-hand", async (req, res) => {
+  const id = Number(req.params.id);
+  const undo = req.body?.undo === true;
+  const outcome = await setByHand(id, !undo);
+  if (!outcome.ok) throw new HttpError(outcome.reason === "No such post." ? 404 : outcome.reason.startsWith("Couldn't cancel") ? 502 : 409, outcome.reason);
+  audit(req, undo ? "post.by-app" : "post.by-hand", `target #${id}`);
   res.json({ ok: true });
 });
 

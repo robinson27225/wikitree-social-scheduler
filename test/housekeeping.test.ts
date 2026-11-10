@@ -64,3 +64,29 @@ describe("clearing out what is old", () => {
     assert.deepEqual(all("SELECT email FROM audit").map((r) => r.email), ["b"]);
   });
 });
+
+describe("a video post's stand-in picture", () => {
+  it("is kept while the post exists, and cleared out with the post's other files when it is old", () => {
+    const at = new Date(Date.now() - 200 * 86_400_000).toISOString();
+    const account = Number(run("INSERT INTO accounts (kind, label, config, created_at) VALUES ('dryrun', 'Stand-in', '{}', ?)", at).lastInsertRowid);
+    const id = Number(
+      run(
+        "INSERT INTO posts (text, alt_text, media_file, source_path, scheduled_at, created_at, alt_media) VALUES ('v', '', 'clip-old.mp4', '', ?, ?, ?)",
+        at,
+        at,
+        JSON.stringify({ file: "standin-old.png", source: "", alt: "" }),
+      ).lastInsertRowid,
+    );
+    run("INSERT INTO targets (post_id, account_id, status, posted_at) VALUES (?, ?, 'scheduled', NULL)", id, account);
+    for (const name of ["clip-old.mp4", "standin-old.png"]) touch(name);
+
+    pruneOrphanMedia(0);
+    assert.ok(fs.existsSync(path.join(MEDIA_DIR, "standin-old.png")), "a post still uses it");
+    assert.equal(pruneOldMedia(), 0, "the post hasn't gone out, so it keeps its files");
+
+    run("UPDATE targets SET status = 'posted', posted_at = ? WHERE post_id = ?", at, id);
+    assert.equal(pruneOldMedia(), 2, "the video and its stand-in picture");
+    assert.equal(fs.existsSync(path.join(MEDIA_DIR, "standin-old.png")), false);
+  });
+});
+

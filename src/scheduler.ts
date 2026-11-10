@@ -1,5 +1,5 @@
 import path from "node:path";
-import { extraImagesOf } from "./library.ts";
+import { altImageOf, extraImagesOf } from "./library.ts";
 import { all, get, getSetting, MEDIA_DIR, readConfig, run, writeConfig } from "./db.ts";
 import { mediaKindOf } from "./media.ts";
 import { providerFor } from "./providers/index.ts";
@@ -41,9 +41,9 @@ function contextFor(accountId: number): ProviderContext {
 
 function loadTarget(targetId: number) {
   return get(
-    `SELECT t.id, t.status, t.mode, t.remote, t.account_id,
-            t.text_override, t.title_override, t.alt_override, t.no_media, t.thumb_first_frame,
-            p.text, p.title, p.alt_text, p.media_file, p.extra_media, p.scheduled_at,
+    `SELECT t.id, t.status, t.mode, t.remote, t.account_id, t.by_hand,
+            t.text_override, t.title_override, t.alt_override, t.no_media, t.thumb_first_frame, t.use_alt_media,
+            p.text, p.title, p.alt_text, p.media_file, p.extra_media, p.alt_media, p.scheduled_at,
             a.kind, a.label
        FROM targets t
        JOIN posts p ON p.id = t.post_id
@@ -60,13 +60,15 @@ function currentConfig(accountId: number): Config {
 
 /** What this one channel posts: the post's own text, title, alt text and media, unless the channel has its own. */
 function inputFor(row: Record<string, any>, idempotencyKey: string): PublishInput {
+  // A channel set to show the post's picture instead of its video posts that picture, with the picture's own description.
+  const instead = !row.no_media && row.use_alt_media ? altImageOf(row.alt_media) : null;
   // An empty media_file means a text-only post, and so does a channel set to skip the media.
-  const mediaFile = row.no_media ? "" : row.media_file;
+  const mediaFile = row.no_media ? "" : (instead?.file ?? row.media_file);
   const mediaPath = mediaFile ? path.join(MEDIA_DIR, mediaFile) : null;
   const mediaKind = mediaPath ? mediaKindOf(mediaPath) : null;
   // More pictures after the first, as many as this platform takes (the rest are left off this channel).
   let extraImages: PublishInput["extraImages"];
-  if (mediaKind === "image") {
+  if (mediaKind === "image" && !instead) {
     const room = Math.max((providerFor(row.kind).maxImages?.(currentConfig(row.account_id)) ?? 1) - 1, 0);
     const extras = extraImagesOf(row.extra_media).slice(0, room);
     if (extras.length) extraImages = extras.map((e) => ({ path: path.join(MEDIA_DIR, e.file), altText: e.alt }));
@@ -74,12 +76,12 @@ function inputFor(row: Record<string, any>, idempotencyKey: string): PublishInpu
   return {
     text: row.text_override ?? row.text,
     title: row.title_override ?? row.title ?? "",
-    altText: row.alt_override ?? row.alt_text,
+    altText: row.alt_override ?? (instead ? instead.alt : row.alt_text),
     mediaPath,
     mediaKind,
     ...(extraImages ? { extraImages } : {}),
     idempotencyKey,
-    thumbnailFromVideo: Boolean(row.thumb_first_frame),
+    thumbnailFromVideo: Boolean(row.thumb_first_frame) && !instead,
   };
 }
 
@@ -104,6 +106,7 @@ export async function placeTarget(targetId: number): Promise<void> {
   const window = provider.serverScheduleWindow?.(config) ?? { minMs: MIN_SERVER_LEAD_MS, maxMs: Infinity };
   const lead = Date.parse(row.scheduled_at) - Date.now();
   const canHold =
+    !row.by_hand && // a channel the person is posting by hand is never handed to the platform
     provider.scheduleOnServer &&
     provider.supportsServerSchedule?.(config) &&
     lead >= window.minMs &&
@@ -153,6 +156,58 @@ export async function releaseServerCopy(targetId: number): Promise<boolean> {
   return cancelled;
 }
 
+/** True for a channel a person posts to themselves: an account with no API, or one they chose to do by hand this time. */
+const postedByHand = (row: Record<string, any>) => Boolean(providerFor(String(row.kind)).manual) || Boolean(row.by_hand);
+
+const OPEN_STATUSES = ["scheduled", "ready", "missed", "failed"];
+
+/**
+ * Switches one channel of a post between "the app posts it" and "I'll post it by hand" (any platform: it is refusing, its
+ * sign-in lapsed, or you'd rather do it there). By hand, it behaves like a manual account: nothing is sent, it turns Ready
+ * at its time, and you mark it posted with the link. Any copy the platform is holding is cancelled first, so it can't also
+ * go out by itself.
+ */
+export async function setByHand(targetId: number, on: boolean): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const row = get(
+    `SELECT t.status, t.mode, t.remote, t.by_hand, p.scheduled_at, a.kind, a.label
+       FROM targets t JOIN posts p ON p.id = t.post_id JOIN accounts a ON a.id = t.account_id WHERE t.id = ?`,
+    targetId,
+  );
+  if (!row) return { ok: false, reason: "No such post." };
+  if (providerFor(String(row.kind)).manual) return { ok: false, reason: "That account is always posted by hand." };
+  if (!OPEN_STATUSES.includes(String(row.status))) return { ok: false, reason: "That one has already gone out (or is going out right now)." };
+  const future = Date.parse(String(row.scheduled_at)) > Date.now();
+  const stillOpen = `status IN (${OPEN_STATUSES.map((s) => `'${s}'`).join(", ")})`;
+
+  if (!on) {
+    // Back to the app: wait for its time, or, if that has passed, sit as Missed for the person to send with Retry.
+    const done = run(`UPDATE targets SET by_hand = 0, handed_off_at = NULL, status = ?, error = NULL WHERE id = ? AND ${stillOpen}`, future ? "scheduled" : "missed", targetId);
+    if (done.changes === 0) return { ok: false, reason: "That one has already gone out (or is going out right now)." };
+    if (future) await placeTarget(targetId);
+    return { ok: true };
+  }
+
+  if (row.mode === "remote" && row.remote) {
+    let cancelled: boolean;
+    try {
+      cancelled = await releaseServerCopy(targetId);
+    } catch (e) {
+      return { ok: false, reason: `Couldn't cancel the copy scheduled on ${row.label}, so nothing was changed: ${errMsg(e)}` };
+    }
+    // Still waiting for its time, yet the platform no longer has it: it may have just gone out. Let the next check say.
+    if (!cancelled && row.status === "scheduled") {
+      return { ok: false, reason: `This post is no longer on ${row.label}'s schedule, so it may already have been published. Check the account; the Queue will update shortly.` };
+    }
+  }
+  const done = run(
+    `UPDATE targets SET by_hand = 1, mode = 'local', remote = NULL, status = ?, error = NULL WHERE id = ? AND ${stillOpen}`,
+    future ? "scheduled" : "ready",
+    targetId,
+  );
+  if (done.changes === 0) return { ok: false, reason: "That one has already gone out (or is going out right now)." };
+  return { ok: true };
+}
+
 /** Marks a manual-platform target as ready for the person to post by hand. */
 function markReady(targetId: number, label: string): void {
   const handedOff = Boolean(get("SELECT handed_off_at FROM targets WHERE id = ?", targetId)?.handed_off_at);
@@ -168,11 +223,11 @@ function markReady(targetId: number, label: string): void {
  */
 export function unmarkPosted(targetId: number): { ok: true } | { ok: false; reason: string } {
   const row = get(
-    `SELECT t.status, p.scheduled_at, a.kind FROM targets t JOIN posts p ON p.id = t.post_id JOIN accounts a ON a.id = t.account_id WHERE t.id = ?`,
+    `SELECT t.status, t.by_hand, p.scheduled_at, a.kind FROM targets t JOIN posts p ON p.id = t.post_id JOIN accounts a ON a.id = t.account_id WHERE t.id = ?`,
     targetId,
   );
   if (!row) return { ok: false, reason: "No such post." };
-  if (!providerFor(String(row.kind)).manual) return { ok: false, reason: "That was posted by the app itself, so it can't be taken back here." };
+  if (!postedByHand(row)) return { ok: false, reason: "That was posted by the app itself, so it can't be taken back here." };
   if (row.status !== "posted") return { ok: false, reason: "That one isn't marked as posted." };
   const next = Date.parse(String(row.scheduled_at)) > Date.now() ? "scheduled" : "ready";
   run("UPDATE targets SET status = ?, url = NULL, error = NULL, posted_at = NULL, external_id = NULL WHERE id = ?", next, targetId);
@@ -181,9 +236,9 @@ export function unmarkPosted(targetId: number): { ok: true } | { ok: false; reas
 
 /** Changes (or clears) the link recorded for a hand-posted target that is marked posted. */
 export function setPostedLink(targetId: number, url: string): { ok: true } | { ok: false; reason: string } {
-  const row = get("SELECT t.status, a.kind FROM targets t JOIN accounts a ON a.id = t.account_id WHERE t.id = ?", targetId);
+  const row = get("SELECT t.status, t.by_hand, a.kind FROM targets t JOIN accounts a ON a.id = t.account_id WHERE t.id = ?", targetId);
   if (!row) return { ok: false, reason: "No such post." };
-  if (!providerFor(String(row.kind)).manual) return { ok: false, reason: "That was posted by the app itself, so its link can't be changed." };
+  if (!postedByHand(row)) return { ok: false, reason: "That was posted by the app itself, so its link can't be changed." };
   if (row.status !== "posted") return { ok: false, reason: "That one isn't marked as posted." };
   const clean = url.trim();
   if (clean && !/^https?:\/\//i.test(clean)) return { ok: false, reason: "The link must start with https://" };
@@ -197,11 +252,11 @@ export function setPostedLink(targetId: number, url: string): { ok: true } | { o
  */
 export function setHandedOff(targetId: number, on: boolean): { ok: true } | { ok: false; reason: string } {
   const row = get(
-    `SELECT t.status, p.scheduled_at, a.kind FROM targets t JOIN posts p ON p.id = t.post_id JOIN accounts a ON a.id = t.account_id WHERE t.id = ?`,
+    `SELECT t.status, t.by_hand, p.scheduled_at, a.kind FROM targets t JOIN posts p ON p.id = t.post_id JOIN accounts a ON a.id = t.account_id WHERE t.id = ?`,
     targetId,
   );
   if (!row) return { ok: false, reason: "No such post." };
-  if (!providerFor(String(row.kind)).manual) return { ok: false, reason: "That's only for accounts you post to by hand." };
+  if (!postedByHand(row)) return { ok: false, reason: "That's only for channels you post to by hand." };
   if (!["scheduled", "ready", "missed", "failed"].includes(String(row.status))) return { ok: false, reason: "That one has already been posted." };
   if (!on) {
     run("UPDATE targets SET handed_off_at = NULL WHERE id = ?", targetId);
@@ -231,7 +286,7 @@ export function markPosted(targetId: number, url?: string): boolean {
  */
 export async function publishTarget(targetId: number): Promise<boolean> {
   const peek = loadTarget(targetId);
-  if (peek && providerFor(peek.kind).manual) {
+  if (peek && (providerFor(peek.kind).manual || peek.by_hand)) {
     // No API to call: "post now" just brings it to the front for the person to do by hand.
     if (!["scheduled", "missed", "failed"].includes(peek.status)) return false;
     markReady(targetId, peek.label);
@@ -406,7 +461,7 @@ export function schedulerHealth(nowMs = Date.now()): { running: boolean; stalled
 export async function tick(now: Date = new Date()): Promise<void> {
   lastTickAt = Date.now();
   const due = all(
-    `SELECT t.id, p.scheduled_at, a.kind, a.label
+    `SELECT t.id, t.by_hand, p.scheduled_at, a.kind, a.label
        FROM targets t
        JOIN posts p ON p.id = t.post_id
        JOIN accounts a ON a.id = t.account_id
@@ -417,7 +472,7 @@ export async function tick(now: Date = new Date()): Promise<void> {
   let missed = 0;
   const sending: Promise<unknown>[] = [];
   for (const target of due) {
-    if (providerFor(target.kind).manual) {
+    if (providerFor(target.kind).manual || target.by_hand) {
       // Nothing to call and nothing stale to avoid: just tell the person it's time.
       markReady(target.id, target.label);
       continue;

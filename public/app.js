@@ -16,6 +16,8 @@ const state = {
   showOlder: false, // the Queue shows the last 90 days unless asked for everything
   more: [], // library items added after the first picture of a post of pictures (each { id, name })
   moreAlt: {}, // library id -> the description typed for that extra picture
+  altPicture: null, // with a video chosen: the picture ({ id, name }) for channels that should show a picture instead
+  altPictureAlt: "", // its description
   pendingToken: null,
   me: null, // { mode, user: { email, name, role }, csrf }
   templates: [],
@@ -308,6 +310,7 @@ async function loadLibrary() {
       $("compose").hidden = true;
     }
     state.more = state.more.filter((m) => data.items.some((i) => i.id === m.id));
+    if (state.altPicture && !data.items.some((i) => i.id === state.altPicture.id)) state.altPicture = null;
     renderGrid();
     const videos = data.items.filter((i) => i.kind === "video").length;
     if (!state.uploading) {
@@ -392,6 +395,33 @@ const canAddPicture = (item) =>
   !$("compose").hidden && state.selected?.kind === "image" && item.kind === "image" && item.id !== state.selected.id;
 const MAX_PICTURES = 20;
 
+/** With a video chosen, any picture can stand in for it on the channels that should show a picture instead (one per post). */
+const canBeAltPicture = (item) => !$("compose").hidden && state.selected?.kind === "video" && item.kind === "image";
+
+function toggleAltPicture(item) {
+  if (state.altPicture?.id === item.id) state.altPicture = null;
+  else state.altPicture = { id: item.id, name: item.name };
+  state.altPictureAlt = "";
+  showComposeMode(); // redraws the grid and the channel options
+}
+
+/** Channels remembered as "show the picture instead of the video", and as "I post this one by hand". */
+const loadIdSet = (key) => {
+  try { return new Set(JSON.parse(localStorage.getItem(key) ?? "[]")); } catch { return new Set(); }
+};
+const saveIdSet = (key, set) => {
+  try { localStorage.setItem(key, JSON.stringify([...set])); } catch { /* ignore */ }
+};
+const pictureInsteadIds = loadIdSet("pictureInstead");
+const byHandIds = loadIdSet("byHand");
+
+/** Why this account can't simply take the video, when a picture is ready to stand in and the account takes pictures. */
+const pictureFallback = (account) =>
+  currentKind() === "video" && Boolean(state.altPicture) && Boolean(account.noVideo) && !account.noImage;
+/** This account will show the picture instead of the video: because it must, or because that was ticked. */
+const usesPicture = (account) =>
+  currentKind() === "video" && Boolean(state.altPicture) && !account.noImage && (Boolean(account.noVideo) || pictureInsteadIds.has(account.id));
+
 function toggleExtra(item) {
   if (isExtra(item)) {
     state.more = state.more.filter((m) => m.id !== item.id);
@@ -429,6 +459,12 @@ function renderGrid() {
           el("span", { class: "name" }, item.name),
         ),
         el("button", { class: "remove", title: "Remove from the library", "aria-label": `Remove ${item.name} from the library`, onclick: () => removeFromLibrary(item) }, "✕"),
+        canBeAltPicture(item) && el("button", {
+          class: `addpic ${state.altPicture?.id === item.id ? "on" : ""}`,
+          title: state.altPicture?.id === item.id ? "Stop using this picture in place of the video" : "Use this picture on the channels that should show a picture instead of the video",
+          "aria-pressed": String(state.altPicture?.id === item.id),
+          onclick: () => toggleAltPicture(item),
+        }, state.altPicture?.id === item.id ? "✓ picture" : "+ picture"),
         canAddPicture(item) && el("button", {
           class: `addpic ${isExtra(item) ? "on" : ""}`,
           title: isExtra(item) ? "Take this picture out of the post" : "Add this picture to the post being written",
@@ -461,7 +497,34 @@ function showComposeMode() {
     $("compose-name").textContent = state.selected.name;
   }
   renderMorePictures();
+  renderAltPicture();
   renderAccountChecks();
+}
+
+/** With a video: the picture for channels that should show a picture instead, with its description. */
+function renderAltPicture() {
+  const box = $("alt-picture");
+  box.hidden = state.selected?.kind !== "video";
+  if (box.hidden) return;
+  const p = state.altPicture;
+  box.replaceChildren(...[
+    el("p", { class: "muted small" }, p
+      ? "This picture goes out instead of the video on the channels ticked “post the picture instead” below."
+      : "Should a channel (Facebook, say) show a picture instead of this video? Press “+ picture” on a picture in the library."),
+    p && el("ul", { class: "more-list" },
+      el("li", {},
+        el("img", { src: `/api/library/${p.id}/thumb`, alt: "" }),
+        el("div", {},
+          el("div", { class: "muted small" }, `Picture instead of the video: ${p.name}`),
+          el("input", {
+            type: "text", placeholder: "Describe this picture for screen readers", value: state.altPictureAlt,
+            "aria-label": "Description of the picture used instead of the video",
+            oninput: (e) => { state.altPictureAlt = e.target.value; },
+          }),
+        ),
+        el("button", { type: "button", class: "link", title: "Don't use a picture in place of the video", onclick: () => toggleAltPicture(p) }, "✕"),
+      )),
+  ].filter(Boolean));
 }
 
 /** The strip of pictures after the first, each with its own description. */
@@ -506,6 +569,8 @@ function startTextOnly() {
   state.selected = { id: null, name: "", kind: null };
   state.more = [];
   state.moreAlt = {};
+  state.altPicture = null;
+  state.altPictureAlt = "";
   renderGrid();
   $("compose").hidden = false;
   $("text").value = keepText;
@@ -525,6 +590,8 @@ function selectItem(item) {
   state.selected = item;
   state.more = [];
   state.moreAlt = {};
+  state.altPicture = null;
+  state.altPictureAlt = "";
   renderGrid();
   $("compose").hidden = false;
   $("text").value = keepText;
@@ -584,11 +651,14 @@ function renderAccountChecks() {
   }
   const kind = currentKind();
   for (const account of state.accounts) {
-    const textOnly = textOnlyFallback(account);
-    const why = textOnly ? null : refusalFor(account);
+    const picture = usesPicture(account);
+    const textOnly = !pictureFallback(account) && textOnlyFallback(account);
+    const why = textOnly || pictureFallback(account) ? null : refusalFor(account);
     const wanted = hadChecks ? currentlyChecked.has(account.id) : remembered.includes(account.id);
     // A channel that can post without the picture gets its own switch for that.
-    const canSkipMedia = kind !== null && !why && !textOnly && !account.noText;
+    const canSkipMedia = kind !== null && !why && !textOnly && !picture && !account.noText;
+    // With a video and a stand-in picture chosen, a channel that takes both can be told which to show.
+    const canChoosePicture = kind === "video" && Boolean(state.altPicture) && !why && !account.noImage && !account.noVideo;
     box.append(
       el("div", { class: `acct ${why ? "disabled" : ""}`, style: "display:block" },
         el("label", { style: "display:flex;gap:8px;align-items:center" },
@@ -600,6 +670,14 @@ function renderAccountChecks() {
         !why && !textOnly && kind === "image" && state.more.length + 1 > account.maxImages &&
           el("span", { class: "why" }, `Takes ${account.maxImages} picture${account.maxImages === 1 ? "" : "s"}: it will post the first ${account.maxImages}.`),
         textOnly && el("span", { class: "why" }, `${refusalFor(account)} It will post the text only, without the ${kind}.`),
+        pictureFallback(account) && el("span", { class: "why" }, `${refusalFor(account)} It will post the picture instead.`),
+        canChoosePicture && el("label", { class: "opts" },
+          el("input", {
+            type: "checkbox", checked: pictureInsteadIds.has(account.id), "aria-label": `Post the picture instead of the video on ${account.label}`,
+            onchange: (e) => { e.target.checked ? pictureInsteadIds.add(account.id) : pictureInsteadIds.delete(account.id); saveIdSet("pictureInstead", pictureInsteadIds); renderAccountChecks(); },
+          }),
+          "post the picture instead of the video",
+        ),
         account.kind === "youtube" && kind === "video" && !why && el("label", { class: "opts" },
           el("input", {
             type: "checkbox", checked: thumbFrameIds.has(account.id), "aria-label": `Use the first frame of the video as the thumbnail on ${account.label}`,
@@ -613,6 +691,14 @@ function renderAccountChecks() {
             onchange: (e) => { e.target.checked ? noMediaIds.add(account.id) : noMediaIds.delete(account.id); saveNoMedia(); },
           }),
           `post without the ${kind}`,
+        ),
+        // Any channel the app could post to can be done by hand instead: nothing is sent, and you mark it posted.
+        !why && !account.manual && el("label", { class: "opts" },
+          el("input", {
+            type: "checkbox", checked: byHandIds.has(account.id), "aria-label": `I'll post to ${account.label} by hand`,
+            onchange: (e) => { e.target.checked ? byHandIds.add(account.id) : byHandIds.delete(account.id); saveIdSet("byHand", byHandIds); },
+          }),
+          "I'll post this one by hand",
         ),
       ),
     );
@@ -723,14 +809,21 @@ function showOptions(options) {
   box.hidden = false;
 }
 
-/** Which of the ticked channels should post without the picture. */
+/** What each ticked channel does differently: no picture, the stand-in picture, the video's first frame as thumbnail, or posted by hand. */
 function skippedMedia() {
   const overrides = {};
-  if (!state.selected?.id) return overrides;
+  const hasMedia = Boolean(state.selected?.id);
   for (const id of checkedAccountIds()) {
     const account = state.accounts.find((a) => a.id === id);
-    if (account && (noMediaIds.has(id) || textOnlyFallback(account)) && !account.noText) overrides[id] = { noMedia: true };
-    else if (account?.kind === "youtube" && state.selected.kind === "video" && thumbFrameIds.has(id)) overrides[id] = { thumbFirstFrame: true };
+    if (!account) continue;
+    const o = {};
+    if (hasMedia) {
+      if (usesPicture(account)) o.useAltImage = true;
+      else if ((noMediaIds.has(id) || textOnlyFallback(account)) && !account.noText) o.noMedia = true;
+      else if (account.kind === "youtube" && state.selected.kind === "video" && thumbFrameIds.has(id)) o.thumbFirstFrame = true;
+    }
+    if (byHandIds.has(id) && !account.manual) o.byHand = true;
+    if (Object.keys(o).length) overrides[id] = o;
   }
   return overrides;
 }
@@ -755,6 +848,7 @@ async function schedule() {
         altText: state.selected.kind === "image" ? $("alt").value : "",
         moreImages: state.more.map((m) => ({ libraryId: m.id, altText: state.moreAlt[m.id] ?? "" })),
         wtc: composeWtc(),
+        altImage: state.selected.kind === "video" && state.altPicture ? { libraryId: state.altPicture.id, altText: state.altPictureAlt } : undefined,
         scheduledAt: new Date(when).toISOString(),
         accountIds: checkedAccountIds(),
         overrides: skippedMedia(),
@@ -859,6 +953,8 @@ async function copyToClipboard(text) {
 
 /** The "do this by hand" box for platforms with no API, using this channel's own text and title. */
 function manualBox(post, target) {
+  // This channel's own file: the stand-in picture if it shows that instead of the video.
+  const stand = target.useAltImage && post.altMedia ? post.altMedia : null;
   const hasFile = post.mediaFile && !target.noMedia;
   const early = Date.parse(post.scheduledAt) > Date.now(); // prepared before its time
   return el("div", { class: "manual" },
@@ -871,11 +967,11 @@ function manualBox(post, target) {
       el("button", { onclick: () => copyToClipboard(target.text) }, "Copy text"),
       hasFile && el("a", {
         class: "button",
-        href: `/api/media/${encodeURIComponent(post.mediaFile)}?download=1`,
+        href: `/api/media/${encodeURIComponent(stand ? stand.file : post.mediaFile)}?download=1`,
         download: "",
-      }, post.extraMedia?.length ? "Download picture 1" : `Download the ${post.mediaKind ?? "file"}`),
+      }, stand ? "Download the picture" : post.extraMedia?.length ? "Download picture 1" : `Download the ${post.mediaKind ?? "file"}`),
       // A hand-posted channel gets every picture, one download each.
-      hasFile && (post.extraMedia ?? []).map((m, i) => el("a", {
+      hasFile && !stand && (post.extraMedia ?? []).map((m, i) => el("a", {
         class: "button",
         href: `/api/media/${encodeURIComponent(m.file)}?download=1`,
         download: "",
@@ -909,7 +1005,8 @@ function renderPost(post) {
     ? el("div", { class: "thumbwrap", style: "position:relative" },
         el("img", { src: post.mediaUrl, alt: "" }),
         post.mediaKind === "video" && el("span", { class: "vbadge" }, "▶"),
-        post.extraMedia?.length > 0 && el("span", { class: "more", title: `${post.extraMedia.length + 1} pictures` }, `+${post.extraMedia.length}`))
+        post.extraMedia?.length > 0 && el("span", { class: "more", title: `${post.extraMedia.length + 1} pictures` }, `+${post.extraMedia.length}`),
+        post.altMedia && el("span", { class: "more", title: "Some channels show a picture instead of this video" }, "+ picture"))
     : el("div", { class: "noimg" }, post.mediaRemoved ? "Picture removed" : "Text only");
   return el("div", { class: "post" },
     thumb,
@@ -940,23 +1037,26 @@ let addingChannelsTo = null;
 function addChannelsRefusal(post, account) {
   const kind = post.mediaKind ?? null;
   const why = kind === null ? account.noText : kind === "image" ? account.noImage : account.noVideo;
-  const textOnly = kind !== null && Boolean(why) && !account.noText;
-  return { why: textOnly ? null : why, textOnly, reason: why };
+  // A channel that can't take the video shows the post's stand-in picture if there is one; failing that, the text alone.
+  const picture = kind === "video" && Boolean(why) && Boolean(post.altMedia) && !account.noImage;
+  const textOnly = !picture && kind !== null && Boolean(why) && !account.noText;
+  return { why: textOnly || picture ? null : why, textOnly, picture, reason: why };
 }
 
 function openAddChannels(post) {
   addingChannelsTo = post;
   const already = new Set(post.targets.map((t) => t.accountId));
   const rows = state.accounts.filter((a) => !already.has(a.id)).map((account) => {
-    const { why, textOnly, reason } = addChannelsRefusal(post, account);
+    const { why, textOnly, picture, reason } = addChannelsRefusal(post, account);
     return el("div", { class: `acct ${why ? "disabled" : ""}`, style: "display:block" },
       el("label", { style: "display:flex;gap:8px;align-items:center" },
-        el("input", { type: "checkbox", "data-add-account": account.id, "data-text-only": textOnly ? "1" : "", disabled: Boolean(why) }),
+        el("input", { type: "checkbox", "data-add-account": account.id, "data-text-only": textOnly ? "1" : "", "data-picture": picture ? "1" : "", disabled: Boolean(why) }),
         `${account.label} `,
         el("span", { class: "muted small" }, `(${account.kindLabel})`),
       ),
       why && el("span", { class: "why" }, why),
       textOnly && el("span", { class: "why" }, `${reason} It will post the text only, without the ${post.mediaKind}.`),
+      picture && el("span", { class: "why" }, `${reason} It will post the picture instead.`),
     );
   });
   $("add-channels-list").replaceChildren(...rows);
@@ -971,7 +1071,10 @@ async function saveAddChannels(event) {
   const boxes = [...document.querySelectorAll("#add-channels-list input[data-add-account]:checked")];
   if (!boxes.length) return say("add-channels-msg", "Tick at least one channel.", false);
   const overrides = {};
-  for (const box of boxes) if (box.dataset.textOnly) overrides[box.dataset.addAccount] = { noMedia: true };
+  for (const box of boxes) {
+    if (box.dataset.picture) overrides[box.dataset.addAccount] = { useAltImage: true };
+    else if (box.dataset.textOnly) overrides[box.dataset.addAccount] = { noMedia: true };
+  }
   const button = $("add-channels-save");
   button.disabled = true;
   say("add-channels-msg", "Adding…", true);
@@ -1004,18 +1107,23 @@ function renderChannel(post, t) {
       chip,
       t.customText && el("span", { class: "badge-note" }, "own text"),
       t.noMedia && el("span", { class: "badge-note" }, `no ${post.mediaKind ?? "image"}`),
+      t.useAltImage && el("span", { class: "badge-note" }, "picture instead of the video"),
+      t.byHand && el("span", { class: "badge-note" }, "by hand"),
       t.customTitle && el("span", { class: "badge-note" }, "own title"),
       t.titleMissing && pending && el("span", { class: "badge-note warn" }, "needs a title"),
       el("div", { class: "cbtns" },
         pending && el("button", { onclick: () => openChannelEdit(post, t) }, "Edit"),
-        t.status === "posted" && t.manualUrl && el("button", { onclick: () => editPostedLink(t) }, "Edit link"),
-        t.status === "posted" && t.manualUrl && el("button", { class: "link", onclick: () => unmarkPosted(t) }, "Not posted after all"),
+        t.status === "posted" && t.manual && el("button", { onclick: () => editPostedLink(t) }, "Edit link"),
+        t.status === "posted" && t.manual && el("button", { class: "link", onclick: () => unmarkPosted(t) }, "Not posted after all"),
+        // Any channel the app would post to can be done by hand instead (and handed back).
+        pending && !t.manual && el("button", { class: "link", title: "Nothing is sent: you post it there yourself and mark it posted", onclick: () => setByHand(t, true) }, "Post by hand instead"),
+        pending && t.byHand && el("button", { class: "link", onclick: () => setByHand(t, false) }, "Let the app post it"),
         byYou && el("button", { class: "link", onclick: () => setScheduledThere(t, false) }, "Not scheduled there after all"),
         // Already scheduled by hand on the platform's own tool: the next step is to say it went out, not to prepare it again.
         byYou && el("button", { class: "primary", onclick: () => markPostedByHand(t) }, "Mark as posted"),
         !byYou && ["scheduled", "missed", "failed"].includes(t.status) &&
           el("button", { onclick: (e) => postNow(t, e.currentTarget) },
-            t.manualUrl ? "Prepare now" : t.status === "scheduled" ? "Post now" : "Retry"),
+            t.manual ? "Prepare now" : t.status === "scheduled" ? "Post now" : "Retry"),
       ),
     ),
     t.customText && t.status !== "posted" && el("div", { class: "ctext" }, t.text),
@@ -1056,8 +1164,21 @@ async function setScheduledThere(target, on) {
   loadQueue();
 }
 
+/** Switches a channel between "the app posts it" and "I'll post it by hand". */
+async function setByHand(target, on) {
+  if (on && target.mode === "remote" && target.status === "scheduled"
+    && !confirm(`${target.accountLabel} is holding this post on its own schedule. Take it off there so you can post it by hand?`)) return;
+  try {
+    await api(`/api/targets/${target.id}/by-hand`, { method: "POST", body: on ? {} : { undo: true } });
+    toast(on ? `${target.accountLabel}: yours to post by hand. Nothing will be sent.` : `${target.accountLabel}: back with the app.`);
+  } catch (e) {
+    toast(e.message);
+  }
+  loadQueue();
+}
+
 async function postNow(target, button) {
-  const message = target.manualUrl
+  const message = target.manual
     ? `Get ${target.accountLabel} ready now? (You'll post it there by hand.)`
     : `Post to ${target.accountLabel} right now?`;
   if (!confirm(message)) return;
@@ -1148,6 +1269,16 @@ function openChannelEdit(post, t) {
   $("channel-nomedia").disabled = Boolean(t.textOnlyRefusal);
   $("channel-nomedia-why").textContent = t.textOnlyRefusal ?? "";
 
+  // On a video post that carries a stand-in picture: this channel can show the picture instead.
+  const canSwap = post.mediaKind === "video" && Boolean(post.altMedia);
+  $("channel-altimage-row").hidden = !canSwap;
+  $("channel-altimage").checked = canSwap && t.useAltImage;
+  $("channel-altimage").disabled = Boolean(t.altImageRefusal);
+  $("channel-altimage-why").textContent = canSwap ? (t.altImageRefusal ?? "") : "";
+  // One or the other: no media at all, or the picture.
+  $("channel-altimage").onchange = () => { if ($("channel-altimage").checked) $("channel-nomedia").checked = false; };
+  $("channel-nomedia").onchange = () => { if ($("channel-nomedia").checked) $("channel-altimage").checked = false; };
+
   say("channel-msg", "", true);
   updateChannelCount();
   $("channel-dialog").showModal();
@@ -1162,6 +1293,7 @@ async function saveChannel(event) {
     // Same as the shared text means "no override", so later edits to the shared text reach this channel too.
     text: useShared || $("channel-text").value.trim() === post.text.trim() ? "" : $("channel-text").value,
     noMedia: $("channel-nomedia-row").hidden ? false : $("channel-nomedia").checked,
+    useAltImage: $("channel-altimage-row").hidden ? false : $("channel-altimage").checked,
   };
   if (title !== undefined) body.title = title.trim() === (post.title ?? "").trim() ? "" : title;
   const button = $("channel-save");

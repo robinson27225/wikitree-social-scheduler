@@ -191,6 +191,10 @@ if (!accountColumns.includes("retired")) db.exec("ALTER TABLE accounts ADD COLUM
 // Each person's own Anthropic API key for "Draft with Claude" (encrypted like the other secrets).
 const userColumns = (db.prepare("PRAGMA table_info(users)").all() as { name: string }[]).map((c) => c.name);
 if (!userColumns.includes("anthropic_key")) db.exec("ALTER TABLE users ADD COLUMN anthropic_key TEXT NOT NULL DEFAULT ''");
+// A post with a video can also carry one picture, for the channels that should show a picture instead (see use_alt_media).
+// Stored like an extra picture: { file, source, alt }, or empty.
+if (!postColumns.includes("alt_media")) db.exec("ALTER TABLE posts ADD COLUMN alt_media TEXT NOT NULL DEFAULT ''");
+if (!targetColumns.includes("use_alt_media")) db.exec("ALTER TABLE targets ADD COLUMN use_alt_media INTEGER NOT NULL DEFAULT 0");
 // A WikiTree Challenge post: which challenge, and which stage of it (see wtc.ts). Both empty for an ordinary post.
 if (!postColumns.includes("wtc_challenge")) db.exec("ALTER TABLE posts ADD COLUMN wtc_challenge TEXT NOT NULL DEFAULT ''");
 if (!postColumns.includes("wtc_phase")) db.exec("ALTER TABLE posts ADD COLUMN wtc_phase TEXT NOT NULL DEFAULT ''");
@@ -216,6 +220,8 @@ db.exec("CREATE TABLE IF NOT EXISTS template_skips (template_id INTEGER NOT NULL
 // The platform's own id for a published post (a Mastodon status id, a Facebook post id, an Instagram media id...).
 if (!targetColumns.includes("external_id")) db.exec("ALTER TABLE targets ADD COLUMN external_id TEXT");
 // For platforms with no API: when the person said they had scheduled the post themselves on the platform's own tool.
+// The person chose to post this one by hand, on a platform the app would otherwise post to itself.
+if (!targetColumns.includes("by_hand")) db.exec("ALTER TABLE targets ADD COLUMN by_hand INTEGER NOT NULL DEFAULT 0");
 if (!targetColumns.includes("handed_off_at")) db.exec("ALTER TABLE targets ADD COLUMN handed_off_at TEXT");
 // YouTube: use the first frame of the video as its thumbnail.
 if (!targetColumns.includes("thumb_first_frame")) db.exec("ALTER TABLE targets ADD COLUMN thumb_first_frame INTEGER NOT NULL DEFAULT 0");

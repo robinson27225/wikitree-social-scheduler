@@ -275,6 +275,31 @@ describe("a backup of a post with several pictures", () => {
     assert.equal(made.pendingPosts, 1, "one post");
     assert.equal(made.mediaFiles, 3, "but all three of its pictures");
   });
+
+  it("carries the picture a video post shows instead of the video on some channels", async () => {
+    const dir = path.join(root, "hostStandIn");
+    const app = await startApp(dir, { DATA_KEY: keyA.toString("base64") });
+    try {
+      const put = async (name: string, bytes: Buffer) =>
+        ((await (await fetch(`${app.base}/api/library?name=${name}`, { method: "PUT", headers: { "content-type": "application/octet-stream" }, body: bytes as BodyInit })).json()) as any).item.id;
+      const video = await put("clip.mp4", Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.alloc(40, 3)]));
+      const picture = await put("standin.png", await sharp({ create: { width: 40, height: 40, channels: 3, background: "#663399" } }).png().toBuffer());
+      const account = await call(app.base, "POST", "/api/accounts", { kind: "dryrun", label: "Stand-in", config: {} });
+      const post = await call(app.base, "POST", "/api/posts", {
+        libraryId: video,
+        altImage: { libraryId: picture, altText: "purple" },
+        text: "Video with a stand-in",
+        scheduledAt: later(600),
+        accountIds: [account.json.id],
+        overrides: { [account.json.id]: { useAltImage: true } },
+      });
+      assert.equal(post.status, 200, JSON.stringify(post.json));
+    } finally {
+      await app.stop();
+    }
+    const made = await createBackup({ dataDir: dir, passphrase: PASS, backupDir: path.join(root, "made-standin"), dataKey: keyA });
+    assert.equal(made.mediaFiles, 2, "the video and the picture");
+  });
 });
 
 describe("nightly backups to a private bucket, and alerts", () => {

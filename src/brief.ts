@@ -66,7 +66,7 @@ export function newestBackup(): { file: string; at: Date } | null {
 export function buildBrief(now: Date = new Date()): Brief {
   const rows = all(
     `SELECT t.id, t.status, t.mode, t.error, t.url, t.posted_at, t.title_override, t.text_override,
-            t.handed_off_at, p.text, p.title, p.scheduled_at, a.label, a.kind, a.config
+            t.handed_off_at, t.by_hand, p.text, p.title, p.scheduled_at, a.label, a.kind, a.config
        FROM targets t
        JOIN posts p ON p.id = t.post_id
        JOIN accounts a ON a.id = t.account_id
@@ -107,7 +107,8 @@ export function buildBrief(now: Date = new Date()): Brief {
         const entry =
           upcomingByPost.get(key) ??
           { due: line.due, post: preview(String(r.text)), channels: [], appMustBeRunning: false };
-        const how = provider.manual
+        const byHand = Boolean(provider.manual) || Boolean(r.by_hand);
+        const how = byHand
           ? r.handed_off_at
             ? "you scheduled it there yourself; check it went out"
             : "a reminder, you post it by hand"
@@ -115,7 +116,7 @@ export function buildBrief(now: Date = new Date()): Brief {
             ? `held by ${provider.label}, goes out even if this Mac is off`
             : "posted by this app, so the Mac must be on";
         entry.channels.push({ account: r.label, how });
-        if (!provider.manual && r.mode !== "remote") entry.appMustBeRunning = true;
+        if (!byHand && r.mode !== "remote") entry.appMustBeRunning = true;
         upcomingByPost.set(key, entry);
       } else {
         const key = `${r.scheduled_at}|${r.text}`;

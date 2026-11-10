@@ -131,10 +131,10 @@ export async function createBackup(options: {
       // The first picture of each post that hasn't gone out, and its extra pictures too.
       const pending = snapshot
         .prepare(
-          `SELECT DISTINCT p.id, p.media_file AS f, p.extra_media AS extra FROM posts p JOIN targets t ON t.post_id = p.id
+          `SELECT DISTINCT p.id, p.media_file AS f, p.extra_media AS extra, p.alt_media AS alt FROM posts p JOIN targets t ON t.post_id = p.id
             WHERE p.media_file != '' AND t.status IN ('scheduled', 'posting', 'missed', 'failed', 'ready')`,
         )
-        .all() as { f: string; extra: string }[];
+        .all() as { f: string; extra: string; alt: string }[];
       pendingPostCount = pending.length;
       pendingMedia = [
         ...new Set(
@@ -145,6 +145,13 @@ export async function createBackup(options: {
               more = Array.isArray(list) ? list.flatMap((e) => (typeof e?.file === "string" ? [e.file] : [])) : [];
             } catch {
               /* unreadable: just the first picture */
+            }
+            try {
+              // the picture a video post carries for channels that show a picture instead
+              const alt = r.alt ? (JSON.parse(r.alt) as { file?: string }) : null;
+              if (typeof alt?.file === "string" && alt.file) more.push(alt.file);
+            } catch {
+              /* unreadable: leave it out */
             }
             return [r.f, ...more];
           }),

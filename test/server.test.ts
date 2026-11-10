@@ -481,6 +481,150 @@ describe("posts with several pictures", () => {
   });
 });
 
+describe("posting a channel by hand, on a platform the app could post to", () => {
+  it("switches in the Queue, sends nothing, and is marked posted with its link", async () => {
+    const channel = await addAccount("dryrun", "By hand channel");
+    const made = await call("POST", "/api/posts", { text: "Do this one yourself", scheduledAt: later(120), accountIds: [channel] });
+    const before = (await postById(made.json.id)).targets[0];
+    assert.equal(before.manual, false);
+    assert.equal(before.byHand, false);
+
+    assert.equal((await call("POST", `/api/targets/${before.id}/by-hand`, {})).status, 200);
+    const t = (await postById(made.json.id)).targets[0];
+    assert.equal(t.byHand, true);
+    assert.equal(t.manual, true, "the Queue now treats it like a hand-posted account");
+    assert.equal(t.status, "scheduled");
+
+    const sentBefore = logLines().length;
+    const now = await call("POST", `/api/targets/${t.id}/post-now`, {});
+    assert.equal(now.json.status, "ready", "'Prepare now' gets it ready; nothing is sent");
+    assert.equal(logLines().length, sentBefore);
+
+    assert.equal((await call("POST", `/api/targets/${t.id}/mark-posted`, { url: "https://example.com/mine/1" })).status, 200);
+    const done = (await postById(made.json.id)).targets[0];
+    assert.equal(done.status, "posted");
+    assert.equal(done.url, "https://example.com/mine/1");
+    assert.equal((await call("POST", `/api/targets/${t.id}/posted-link`, { url: "https://example.com/mine/2" })).status, 200, "its link can be corrected");
+    assert.equal((await call("POST", `/api/targets/${t.id}/by-hand`, {})).status, 409, "too late to switch once it is out");
+    assert.equal((await call("POST", "/api/targets/999999/by-hand", {})).status, 404);
+  });
+
+  it("can be chosen when scheduling, and handed back to the app", async () => {
+    const channel = await addAccount("dryrun", "By hand from the start");
+    const other = await addAccount("dryrun", "Posted by the app");
+    const made = await call("POST", "/api/posts", { text: "Mixed", scheduledAt: later(120), accountIds: [channel, other], overrides: { [channel]: { byHand: true } } });
+    assert.equal(made.status, 200, JSON.stringify(made.json));
+    const post = await postById(made.json.id);
+    assert.equal(targetOf(post, "By hand from the start").byHand, true);
+    assert.equal(targetOf(post, "Posted by the app").byHand, false);
+
+    const t = targetOf(post, "By hand from the start");
+    assert.equal((await call("POST", `/api/targets/${t.id}/by-hand`, { undo: true })).status, 200);
+    assert.equal(targetOf(await postById(made.json.id), "By hand from the start").byHand, false);
+    const sentBefore = logLines().length;
+    assert.equal((await call("POST", `/api/targets/${t.id}/post-now`, {})).json.status, "posted", "back with the app, it posts");
+    assert.equal(logLines().length, sentBefore + 1);
+  });
+});
+
+describe("a picture instead of the video on some channels", () => {
+  let videoId = 0;
+  let pictureId = 0;
+  let withPicture: number;
+  let withVideo: number;
+
+  before(async () => {
+    withPicture = await addAccount("dryrun", "Shows the picture");
+    withVideo = await addAccount("dryrun", "Shows the video");
+    videoId = (await upload("standin-clip.mp4", Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.alloc(40, 5)]))).json.item.id;
+    pictureId = (await upload("standin.png", await sharp({ create: { width: 80, height: 80, channels: 3, background: "#663399" } }).png().toBuffer())).json.item.id;
+  });
+
+  const make = (extra: Record<string, unknown> = {}) =>
+    call("POST", "/api/posts", {
+      libraryId: videoId,
+      altImage: { libraryId: pictureId, altText: "A purple square" },
+      text: "Video here, picture there",
+      scheduledAt: later(120),
+      accountIds: [withPicture, withVideo],
+      overrides: { [withPicture]: { useAltImage: true } },
+      ...extra,
+    });
+
+  it("posts the picture, with its own description, on the channels told to, and the video on the rest", async () => {
+    const made = await make();
+    assert.equal(made.status, 200, JSON.stringify(made.json));
+    const post = await postById(made.json.id);
+    assert.equal(post.mediaKind, "video");
+    assert.equal(post.altMedia.altText, "A purple square");
+    assert.equal(post.altMedia.libraryId, pictureId);
+    assert.equal(targetOf(post, "Shows the picture").useAltImage, true);
+    assert.equal(targetOf(post, "Shows the picture").altText, "A purple square");
+    assert.equal(targetOf(post, "Shows the video").useAltImage, false);
+    assert.equal((await fetch(`${base}${post.altMedia.url}`)).status, 200);
+
+    await call("POST", `/api/targets/${targetOf(post, "Shows the picture").id}/post-now`, {});
+    const picture = logLines().at(-1);
+    assert.match(picture.image, /\.png$/);
+    assert.equal(picture.alt, "A purple square");
+    await call("POST", `/api/targets/${targetOf(post, "Shows the video").id}/post-now`, {});
+    assert.match(logLines().at(-1).image, /\.mp4$/);
+
+    const library = (await call("GET", "/api/library")).json.items as any[];
+    assert.equal(library.find((i) => i.id === pictureId).state, "posted", "the stand-in picture counts as used");
+  });
+
+  it("can be switched for one channel afterwards, and gives way to 'no media at all'", async () => {
+    const made = await make();
+    const post = await postById(made.json.id);
+    const video = targetOf(post, "Shows the video");
+    assert.equal((await call("PATCH", `/api/targets/${video.id}`, { useAltImage: true })).status, 200);
+    assert.equal(targetOf(await postById(post.id), "Shows the video").useAltImage, true);
+    assert.equal((await call("PATCH", `/api/targets/${video.id}`, { noMedia: true })).status, 200);
+    const after = targetOf(await postById(post.id), "Shows the video");
+    assert.equal(after.noMedia, true);
+    assert.equal(after.useAltImage, false);
+    await call("POST", `/api/targets/${after.id}/post-now`, {});
+    assert.equal(logLines().at(-1).image, null);
+  });
+
+  it("lets a channel that can't take video show the picture, and only then", async () => {
+    const db = new DatabaseSync(path.join(dataDir, "scheduler.db"));
+    const bsky = Number(
+      db
+        .prepare("INSERT INTO accounts (kind, label, config, created_at) VALUES ('bluesky', 'Bluesky with a picture', ?, ?)")
+        .run(JSON.stringify({ handle: "x.bsky.social", appPassword: "p" }), new Date().toISOString()).lastInsertRowid,
+    );
+    db.close();
+    const refused = await make({ accountIds: [bsky], overrides: {} });
+    assert.equal(refused.status, 400);
+    assert.match(refused.json.error, /Video isn't supported for Bluesky/);
+    const ok = await make({ accountIds: [bsky], overrides: { [bsky]: { useAltImage: true } } });
+    assert.equal(ok.status, 200, JSON.stringify(ok.json));
+    assert.equal(targetOf(await postById(ok.json.id), "Bluesky with a picture").useAltImage, true);
+  });
+
+  it("refuses a stand-in that makes no sense, and ignores the choice when the post has none", async () => {
+    assert.match((await make({ libraryId: pictureId })).json.error, /only makes sense on a post with a video/);
+    assert.match((await make({ altImage: { libraryId: videoId } })).json.error, /choose a picture/);
+    assert.equal((await make({ altImage: { libraryId: 999999 } })).status, 404);
+    const none = await make({ altImage: undefined });
+    assert.equal(none.status, 200);
+    const post = await postById(none.json.id);
+    assert.equal(post.altMedia, null);
+    assert.equal(targetOf(post, "Shows the picture").useAltImage, false, "nothing to show instead, so it posts the video");
+  });
+
+  it("removes the stand-in picture's copy when the post is cancelled", async () => {
+    const made = await make();
+    const post = await postById(made.json.id);
+    const file = post.altMedia.file;
+    assert.equal((await fetch(`${base}/api/media/${file}`)).status, 200);
+    assert.equal((await call("DELETE", `/api/posts/${post.id}`, {})).status, 200);
+    assert.equal((await fetch(`${base}/api/media/${file}`)).status, 404);
+  });
+});
+
 describe("the Queue's list of posts", () => {
   it("shows the last 90 days and whatever is still waiting, and everything on request", async () => {
     const channel = await addAccount("dryrun", "Old posts channel");

@@ -8,7 +8,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "manual-test-"));
 process.env.SOCIAL_SCHEDULER_DATA = dir;
 
 const { get, run, MEDIA_DIR } = await import("../src/db.ts");
-const { markPosted, placeTarget, publishTarget, setHandedOff, setPostedLink, tick, unmarkPosted } = await import("../src/scheduler.ts");
+const { markPosted, placeTarget, publishTarget, setByHand, setHandedOff, setPostedLink, tick, unmarkPosted } = await import("../src/scheduler.ts");
 const { buildBrief } = await import("../src/brief.ts");
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -123,7 +123,7 @@ describe("a post you scheduled yourself on the platform's own tool", () => {
     const account = run("INSERT INTO accounts (kind, label, config, created_at) VALUES ('dryrun', 'Auto', '{}', ?)", new Date().toISOString());
     const post = run("INSERT INTO posts (text, alt_text, media_file, source_path, scheduled_at, created_at) VALUES ('t', '', '', '', ?, ?)", minutes(120), new Date().toISOString());
     const auto = Number(run("INSERT INTO targets (post_id, account_id) VALUES (?, ?)", post.lastInsertRowid, account.lastInsertRowid).lastInsertRowid);
-    assert.match((setHandedOff(auto, true) as { reason: string }).reason, /only for accounts you post to by hand/);
+    assert.match((setHandedOff(auto, true) as { reason: string }).reason, /only for channels you post to by hand/);
 
     const done = addManualTarget(minutes(120));
     markPosted(done);
@@ -187,5 +187,105 @@ describe("correcting a hand-posted post marked as posted by mistake", () => {
     assert.match((setPostedLink(auto, "https://x.com/a") as { reason: string }).reason, /posted by the app itself/);
     assert.equal(status(auto).status, "posted", "a real post stays posted");
     assert.equal(unmarkPosted(999999).ok, false);
+  });
+});
+
+describe("posting any channel by hand", () => {
+  // A test account the app could post to itself, optionally one that holds the schedule like Facebook does.
+  function autoTarget(scheduledAt: string, config: object = {}): number {
+    const account = run("INSERT INTO accounts (kind, label, config, created_at) VALUES ('dryrun', 'Auto channel', ?, ?)", JSON.stringify(config), new Date().toISOString());
+    const post = run("INSERT INTO posts (text, alt_text, media_file, source_path, scheduled_at, created_at) VALUES ('By hand text', '', '', '', ?, ?)", scheduledAt, new Date().toISOString());
+    return Number(run("INSERT INTO targets (post_id, account_id) VALUES (?, ?)", post.lastInsertRowid, account.lastInsertRowid).lastInsertRowid);
+  }
+  const sentKeys = () => {
+    const file = path.join(dir, "dryrun.log");
+    return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l).key as string) : [];
+  };
+  const wasSent = (id: number) => sentKeys().some((k) => k.startsWith(`social-scheduler-target-${id}`));
+
+  it("is never sent by the app: it turns Ready at its time, and is marked posted with the link", async () => {
+    const id = autoTarget(minutes(60));
+    assert.deepEqual(await setByHand(id, true), { ok: true });
+    assert.equal(status(id).by_hand, 1);
+    assert.equal(status(id).status, "scheduled", "waits for its time like a manual account");
+
+    run("UPDATE posts SET scheduled_at = ? WHERE id = ?", minutes(-1), status(id).post_id);
+    await tick();
+    assert.equal(status(id).status, "ready");
+    assert.equal(wasSent(id), false, "the app posted nothing");
+
+    assert.equal(await publishTarget(id), false, "'post now' has nothing to send either");
+    assert.equal(wasSent(id), false);
+    assert.ok(markPosted(id, "https://example.com/by-hand/1"));
+    assert.equal(status(id).status, "posted");
+    assert.equal(status(id).url, "https://example.com/by-hand/1");
+    // and the slips can be fixed, as for a manual account
+    assert.equal(setPostedLink(id, "https://example.com/by-hand/2").ok, true);
+    assert.equal(unmarkPosted(id).ok, true);
+    assert.equal(status(id).status, "ready");
+  });
+
+  it("goes straight to Ready when its time has passed (a failed post you then did yourself)", async () => {
+    const id = autoTarget(minutes(-20), { failWith: "The platform said no" });
+    await tick();
+    assert.equal(status(id).status, "failed");
+    assert.deepEqual(await setByHand(id, true), { ok: true });
+    assert.equal(status(id).status, "ready");
+    assert.equal(status(id).error, null);
+  });
+
+  it("takes the post off the platform's own schedule first, so it can't also go out by itself", async () => {
+    const id = autoTarget(minutes(180), { nativeSchedule: true });
+    await placeTarget(id);
+    assert.equal(status(id).mode, "remote");
+    const held = JSON.parse(status(id).remote).id;
+    const remoteFile = () => JSON.parse(fs.readFileSync(path.join(dir, "dryrun-remote.json"), "utf8"));
+    assert.ok(remoteFile()[held]);
+
+    assert.deepEqual(await setByHand(id, true), { ok: true });
+    assert.equal(remoteFile()[held], undefined, "cancelled at the platform");
+    assert.equal(status(id).mode, "local");
+    assert.equal(status(id).remote, null);
+
+    // an edit or a reschedule never hands it back to the platform while it is by hand
+    await placeTarget(id);
+    assert.equal(status(id).mode, "local");
+  });
+
+  it("can be handed back to the app, which then schedules it as usual", async () => {
+    const id = autoTarget(minutes(180), { nativeSchedule: true });
+    await setByHand(id, true);
+    assert.equal(setHandedOff(id, true).ok, true, "by hand, it can be marked 'scheduled there by you'");
+    assert.deepEqual(await setByHand(id, false), { ok: true });
+    assert.equal(status(id).by_hand, 0);
+    assert.equal(status(id).handed_off_at, null);
+    assert.equal(status(id).mode, "remote", "back on the platform's schedule");
+
+    const late = autoTarget(minutes(-10));
+    await setByHand(late, true);
+    assert.equal(status(late).status, "ready");
+    await setByHand(late, false);
+    assert.equal(status(late).status, "missed", "its time has passed: it waits for a person to press Retry, rather than posting late by itself");
+    assert.equal(wasSent(late), false);
+  });
+
+  it("is refused for what has gone out, and for accounts that are always by hand", async () => {
+    const done = autoTarget(minutes(-1));
+    await tick();
+    assert.equal(status(done).status, "posted");
+    assert.match(((await setByHand(done, true)) as { reason: string }).reason, /already gone out/);
+    assert.match(((await setByHand(addManualTarget(minutes(60)), true)) as { reason: string }).reason, /always posted by hand/);
+    assert.equal((await setByHand(999999, true)).ok, false);
+  });
+
+  it("is described as a by-hand post in the daily digest", async () => {
+    const id = autoTarget(minutes(90));
+    run("UPDATE posts SET text = 'Digest by hand' WHERE id = ?", status(id).post_id);
+    await setByHand(id, true);
+    const brief = buildBrief();
+    const entry = brief.upcoming.find((u: any) => u.post.includes("Digest by hand"));
+    assert.ok(entry, JSON.stringify(brief.upcoming));
+    assert.match(entry.channels[0].how, /by hand/);
+    assert.equal(entry.appMustBeRunning, false);
   });
 });

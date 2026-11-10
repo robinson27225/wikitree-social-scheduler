@@ -31,6 +31,23 @@ export function extraImagesOf(raw: unknown): ExtraImage[] {
     return [];
   }
 }
+/** The picture a video post carries for channels that should show a picture instead of the video, or null. */
+export function altImageOf(raw: unknown): ExtraImage | null {
+  if (!raw) return null;
+  try {
+    const e = JSON.parse(String(raw));
+    return e && typeof e.file === "string" && e.file ? { file: e.file, source: String(e.source ?? ""), alt: String(e.alt ?? "") } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Every file a post keeps besides its first: the extra pictures, and the picture-instead-of-the-video. */
+export function otherFilesOf(row: { extra_media?: unknown; alt_media?: unknown }): ExtraImage[] {
+  const alt = altImageOf(row.alt_media);
+  return [...extraImagesOf(row.extra_media), ...(alt ? [alt] : [])];
+}
+
 export const libraryIdOf = (sourcePath: string): number | null => {
   const m = /^library:(\d+)$/.exec(sourcePath);
   return m ? Number(m[1]) : null;
@@ -170,9 +187,9 @@ function itemOf(row: Record<string, any>, statuses?: Set<string>): LibraryItem {
 /** Everything in the library, newest first, with whether it has been used. */
 export function listLibrary(): LibraryItem[] {
   const used = new Map<number, Set<string>>();
-  for (const row of all("SELECT p.source_path, p.extra_media, t.status FROM posts p JOIN targets t ON t.post_id = p.id WHERE p.source_path LIKE 'library:%'")) {
-    // The first picture and every extra one count as used by this post.
-    for (const source of [String(row.source_path), ...extraImagesOf(row.extra_media).map((e) => e.source)]) {
+  for (const row of all("SELECT p.source_path, p.extra_media, p.alt_media, t.status FROM posts p JOIN targets t ON t.post_id = p.id WHERE p.source_path LIKE 'library:%'")) {
+    // The first picture or video, every extra picture, and a picture used instead of the video all count as used by this post.
+    for (const source of [String(row.source_path), ...otherFilesOf(row).map((e) => e.source)]) {
       const id = libraryIdOf(source);
       if (id === null) continue;
       if (!used.has(id)) used.set(id, new Set());
@@ -208,9 +225,9 @@ export async function deleteFromLibrary(id: number): Promise<void> {
  */
 export function pruneOrphanMedia(minAgeMs = 24 * 3_600_000): number {
   const used = new Set<string>();
-  for (const row of all("SELECT media_file, extra_media FROM posts")) {
+  for (const row of all("SELECT media_file, extra_media, alt_media FROM posts")) {
     if (row.media_file) used.add(String(row.media_file));
-    for (const extra of extraImagesOf(row.extra_media)) used.add(extra.file);
+    for (const extra of otherFilesOf(row)) used.add(extra.file);
   }
   let removed = 0;
   for (const name of fs.readdirSync(MEDIA_DIR)) {
@@ -241,14 +258,14 @@ export function pruneOldMedia(days = KEEP_POSTED_MEDIA_DAYS): number {
   const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
   let removed = 0;
   for (const post of all(
-    `SELECT p.id, p.media_file, p.extra_media FROM posts p
+    `SELECT p.id, p.media_file, p.extra_media, p.alt_media FROM posts p
       WHERE p.media_file != '' AND p.scheduled_at < ?
         AND EXISTS (SELECT 1 FROM targets t WHERE t.post_id = p.id)
         AND NOT EXISTS (SELECT 1 FROM targets t WHERE t.post_id = p.id AND (t.status != 'posted' OR COALESCE(t.posted_at, p.scheduled_at) >= ?))`,
     cutoff,
     cutoff,
   )) {
-    for (const name of [String(post.media_file), ...extraImagesOf(post.extra_media).map((e) => e.file)]) {
+    for (const name of [String(post.media_file), ...otherFilesOf(post).map((e) => e.file)]) {
       const file = path.join(MEDIA_DIR, path.basename(name));
       if (fs.existsSync(file)) {
         fs.rmSync(file, { force: true });
