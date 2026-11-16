@@ -1,5 +1,5 @@
 import { placeholdersOf, fillTemplate } from "../public/template-text.js";
-import { all, getJsonSetting, setJsonSetting } from "./db.ts";
+import { all, getJsonSetting, getSetting, setJsonSetting, setSetting } from "./db.ts";
 import { providerFor } from "./providers/index.ts";
 import { getTemplate } from "./templates.ts";
 import { HttpError } from "./util.ts";
@@ -97,7 +97,34 @@ export function saveColumnSettings(input: unknown): void {
     }
     next[id] = key;
   }
+  // Keep only what differs from the built-in choice, so a later change to the built-in choice isn't overridden by an
+  // old "none" that was only ever saved because the screen saves every account's row together.
+  const accounts = new Map(all("SELECT id, kind, label FROM accounts").map((a) => [String(a.id), { kind: String(a.kind), label: String(a.label) }]));
+  for (const [id, key] of Object.entries(next)) {
+    const account = accounts.get(id);
+    if (account && (defaultColumn(account) ?? "") === key) delete next[id];
+  }
   setJsonSetting(SETTING, next);
+}
+
+/**
+ * One time, on startup: project and event Facebook Pages used to have no column, and saving any other account's column
+ * from Settings stored that "none" for them too. Forget those stored "none"s so their links reach the Facebook column.
+ */
+export function restoreProjectFacebookColumns(): number {
+  if (getSetting("wiki_project_fb_restored") === "true") return 0;
+  setSetting("wiki_project_fb_restored", "true");
+  const map = savedMap();
+  let changed = 0;
+  for (const a of all("SELECT id, kind, label FROM accounts WHERE kind = 'facebook'")) {
+    const id = String(a.id);
+    if (map[id] === "" && projectFacebook({ kind: String(a.kind), label: String(a.label) })) {
+      delete map[id];
+      changed++;
+    }
+  }
+  if (changed) setJsonSetting(SETTING, map);
+  return changed;
 }
 
 // ---------------------------------------------------------------- building the rows

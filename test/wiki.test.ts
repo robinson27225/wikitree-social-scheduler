@@ -7,9 +7,10 @@ import { after, describe, it } from "node:test";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-test-"));
 process.env.SOCIAL_SCHEDULER_DATA = dir;
 
-const { defaultColumn, saveColumnSettings, wikiLink, wikiRows, WIKI_COLUMNS } = await import("../src/wiki.ts");
+const { defaultColumn, saveColumnSettings, restoreProjectFacebookColumns, wikiLink, wikiRows, WIKI_COLUMNS } = await import("../src/wiki.ts");
 const { createTemplate, seedWikiSettings, getTemplate, listTemplates } = await import("../src/templates.ts");
 const { run, getSetting } = await import("../src/db.ts");
+const dbHelpers = await import("../src/db.ts");
 
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 const TZ = "America/Los_Angeles";
@@ -186,6 +187,26 @@ describe("rows of the wiki table", () => {
     const [row] = wikiRows({ postId: only }, { tz: TZ });
     assert.equal(row.text.split("\n")[3], "|[https://www.facebook.com/project/3/ Link]", "the US Black Heritage post's link is in the Facebook cell");
     assert.deepEqual(row.missingLinks, []);
+  });
+
+  it("isn't overridden by an old saved \"none\" for a project Page (the Settings screen saved every row)", () => {
+    const { setJsonSetting, getJsonSetting, setSetting } = dbHelpers;
+    // What an earlier version of the screen stored: a "none" for the project Page, next to a real choice.
+    setJsonSetting("wiki_columns", { [fbProject]: "", [ytCommunity]: "youtube" });
+    const id = post("Old saved none", [[fbProject, "https://www.facebook.com/project/9"]]);
+    assert.equal(wikiRows({ postId: id }, { tz: TZ })[0].text.split("\n")[3], "|", "still held back by the old setting");
+    setSetting("wiki_project_fb_restored", "false");
+    assert.equal(restoreProjectFacebookColumns(), 1);
+    assert.equal(wikiRows({ postId: id }, { tz: TZ })[0].text.split("\n")[3], "|[https://www.facebook.com/project/9/ Link]");
+    assert.equal(restoreProjectFacebookColumns(), 0, "only once");
+    assert.deepEqual(getJsonSetting("wiki_columns", {}), { [ytCommunity]: "youtube" }, "the real choice is kept");
+  });
+
+  it("saving the screen stores only choices that differ from the built-in ones", () => {
+    const { getJsonSetting } = dbHelpers;
+    saveColumnSettings({ [fbProject]: "facebook", [fb]: "facebook", [mast]: "mastodon", [ytCommunity]: "youtube", [tw]: "" });
+    assert.deepEqual(getJsonSetting("wiki_columns", {}), { [ytCommunity]: "youtube", [tw]: "" });
+    saveColumnSettings({ [ytCommunity]: "youtube" });
   });
 
   it("says so when a project Page's link is missing, rather than leaving a silent hole", () => {

@@ -41,7 +41,7 @@ import { backupStatus, checkDisk, diskUsage, maybeRunNightly, runBackup } from "
 import { audit, AUDIT_KEEP_DAYS, pruneAudit, recentAudit } from "./audit.ts";
 import { config } from "./config.ts";
 import { readMemory, startMemorySampler } from "./resources.ts";
-import { listColumnSettings, saveColumnSettings, wikiRows } from "./wiki.ts";
+import { listColumnSettings, restoreProjectFacebookColumns, saveColumnSettings, wikiRows } from "./wiki.ts";
 import { checkWtc, listChallenges, phaseLabel, removeBuiltInGuestTags, saveWtcRows, WTC_PHASES, wtcRows, wtcTable } from "./wtc.ts";
 import { archiveInfo, checkArchivableMonth, clearMonth, collectStats, importTikTokCsv, monthBeforeLast, monthLabel, monthlyCsv, statsRows } from "./stats.ts";
 import { createTemplate, deleteTemplate, getTemplate, leftoverPlaceholders, listSkips, listTemplates, seedTemplates, seedWikiSettings, setSkip, updateTemplate } from "./templates.ts";
@@ -1334,6 +1334,7 @@ moveSharedKeyToItsOwner();
 seedTemplates();
 seedWikiSettings();
 removeBuiltInGuestTags();
+restoreProjectFacebookColumns();
 // The test suite turns this off (SEED_MANUAL_ACCOUNTS=off) so its servers start with no accounts at all.
 if (process.env.SEED_MANUAL_ACCOUNTS !== "off") seedManualAccounts();
 {
