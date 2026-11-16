@@ -1,5 +1,5 @@
 import { all, getJsonSetting, getSetting, setJsonSetting, setSetting } from "./db.ts";
-import { columnFor, wikiLink } from "./wiki.ts";
+import { columnFor, projectFacebook, wikiLink } from "./wiki.ts";
 import { HttpError } from "./util.ts";
 
 /**
@@ -184,6 +184,7 @@ export function wtcTable(challenge: string): WtcTable {
         // In this table a hand-posted YouTube account (the Community tab) is simply the YouTube row.
         const column = columnFor({ id: Number(t.account_id), kind: String(t.kind), label }) ?? (String(t.kind) === "manual" && /youtube/i.test(label) ? "youtube" : null);
         if (column !== row.column) continue;
+        if (projectFacebook({ kind: String(t.kind), label })) continue; // the Challenge row is WikiTree's own Page
         if (filter && !filter.test(label)) continue;
         const url = String(t.url ?? "");
         if (String(t.kind) === "youtube" && t.external_id) cell.push(`{{YouTube|${String(t.external_id)}}}`);

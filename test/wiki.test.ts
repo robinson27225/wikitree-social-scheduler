@@ -15,12 +15,12 @@ after(() => fs.rmSync(dir, { recursive: true, force: true }));
 const TZ = "America/Los_Angeles";
 
 describe("which column each account's links go in", () => {
-  it("follows the platform, and tells WikiTree's own Facebook Page from its project and event Pages", () => {
+  it("follows the platform, and puts every Facebook Page in the Facebook column", () => {
     assert.equal(defaultColumn({ kind: "mastodon", label: "WikiTree on Mastodon" }), "mastodon");
     assert.equal(defaultColumn({ kind: "bluesky", label: "WikiTree on BlueSky" }), "bluesky");
     assert.equal(defaultColumn({ kind: "facebook", label: "WikiTree (Facebook)" }), "facebook");
-    assert.equal(defaultColumn({ kind: "facebook", label: "WikiTree's US Black Heritage Project (Facebook)" }), null);
-    assert.equal(defaultColumn({ kind: "facebook", label: "WikiTree Day & Symposium (Facebook)" }), null);
+    assert.equal(defaultColumn({ kind: "facebook", label: "WikiTree's US Black Heritage Project (Facebook)" }), "facebook");
+    assert.equal(defaultColumn({ kind: "facebook", label: "WikiTree Day & Symposium (Facebook)" }), "facebook");
     assert.equal(defaultColumn({ kind: "x", label: "X" }), "twitter");
     assert.equal(defaultColumn({ kind: "dryrun", label: "Test" }), null);
   });
@@ -179,11 +179,18 @@ describe("rows of the wiki table", () => {
     );
   });
 
-  it("only uses the Page that has a column, not the project's Page", () => {
+  it("shows WikiTree's own Page when a post went to it and a project Page too, and the project's link when it went only there", () => {
     const id = post("Both pages", [[fbProject, "https://www.facebook.com/project/1"], [fb, "https://www.facebook.com/main/2"]]);
     assert.equal(wikiRows({ postId: id }, { tz: TZ })[0].text.split("\n")[3], "|[https://www.facebook.com/main/2/ Link]");
     const only = post("Project page only", [[fbProject, "https://www.facebook.com/project/3"]]);
-    assert.equal(wikiRows({ postId: only }, { tz: TZ })[0].text.split("\n")[3], "|", "the project's link has nowhere to go");
+    const [row] = wikiRows({ postId: only }, { tz: TZ });
+    assert.equal(row.text.split("\n")[3], "|[https://www.facebook.com/project/3/ Link]", "the US Black Heritage post's link is in the Facebook cell");
+    assert.deepEqual(row.missingLinks, []);
+  });
+
+  it("says so when a project Page's link is missing, rather than leaving a silent hole", () => {
+    const id = post("Project page, no link", [[fbProject, null]]);
+    assert.deepEqual(wikiRows({ postId: id }, { tz: TZ })[0].missingLinks, ["Facebook"]);
   });
 
   it("tells you which hand-posted channels have no link, instead of quietly leaving a hole", () => {

@@ -37,8 +37,9 @@ const SETTING = "wiki_columns";
 export function defaultColumn(account: { kind: string; label: string }): string | null {
   switch (account.kind) {
     case "facebook":
-      // WikiTree's own Page has the column; the project and event Pages are separate Pages with their own links.
-      return /project|symposium/i.test(account.label) ? null : "facebook";
+      // Every Facebook Page goes in the Facebook column. When a post went to WikiTree's own Page and a project or event
+      // Page too, the main Page's link is the one shown (see projectFacebook and wikiRows).
+      return "facebook";
     case "x":
       return "twitter";
     case "mastodon":
@@ -60,6 +61,9 @@ export function defaultColumn(account: { kind: string; label: string }): string 
       return null;
   }
 }
+
+/** A project or event Facebook Page (as opposed to WikiTree's own): its link goes in the Facebook column only when the main Page isn't in the post. */
+export const projectFacebook = (account: { kind: string; label: string }) => account.kind === "facebook" && /project|symposium/i.test(account.label);
 
 type ColumnMap = Record<string, string>;
 const savedMap = () => getJsonSetting<ColumnMap>(SETTING, {});
@@ -181,6 +185,7 @@ export function wikiRows(filter: PostFilter, options: WikiOptions = {}): WikiRow
     const missing = new Set<string>();
     const lastParts: string[] = [];
     let videoFromAccount: string | null = null;
+    const projectFb: { hasLink: boolean; url: string }[] = [];
 
     for (const t of targets) {
       const key = columnFor({ id: Number(t.account_id), kind: String(t.kind), label: String(t.label) }, map);
@@ -194,9 +199,20 @@ export function wikiRows(filter: PostFilter, options: WikiOptions = {}): WikiRow
         else missing.add("YouTube");
         continue;
       }
+      if (key === "facebook" && projectFacebook({ kind: String(t.kind), label: String(t.label) })) {
+        // Held back: WikiTree's own Page wins the column if the post went there too.
+        projectFb.push({ hasLink, url });
+        continue;
+      }
       if (cells[key] !== undefined) continue; // an earlier account already filled this column
       if (hasLink) cells[key] = `|[${wikiLink(key, url)} Link]`;
       else missing.add(WIKI_COLUMNS.find((c) => c.key === key)?.label ?? key);
+    }
+    // A post that went only to project or event Pages (US Black Heritage, say) still gets its Facebook link in the table.
+    if (cells.facebook === undefined && !missing.has("Facebook") && projectFb.length) {
+      const withLink = projectFb.find((f) => f.hasLink);
+      if (withLink) cells.facebook = `|[${wikiLink("facebook", withLink.url)} Link]`;
+      else missing.add("Facebook");
     }
 
     // The video and the G2G post are named in the post's own text.
