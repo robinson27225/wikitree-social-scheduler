@@ -136,7 +136,7 @@ If LinkedIn says a permission is invalid, the box "Permissions to request" can b
 
 Limits: 3,000 characters; hashtags stay hashtags and the characters LinkedIn treats as formatting (`( ) [ ] { } @ * _ ~ | < >`) are escaped for you, otherwise LinkedIn can cut a post short. Pictures are sent as JPEG; videos must be MP4 (convert `.mov`).
 
-**Not yet tried against the real LinkedIn.** The code follows LinkedIn's documentation and passes its tests against a stand-in LinkedIn, but nobody has posted for real. Expect to adjust something on the first live attempt, and use a test post first.
+**In real use since November 2026.** WikiTree's Page was approved for the Community Management API (Development Tier, which is enough; there is no need to request the upgrade) and text and picture posts have gone out for real. Video has only been tried against a stand-in LinkedIn, because WikiTree doesn't send video there; test one first if you start.
 
 ## X (Twitter): automatic route (optional)
 
