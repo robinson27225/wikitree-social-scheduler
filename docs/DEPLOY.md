@@ -103,7 +103,7 @@ What each one does:
 | `BRIEF_TOKEN` | Read-only key for the daily brief (`Authorization: Bearer …`) |
 | `BACKUP_S3_*` | The private backup bucket |
 | `ALERT_WEBHOOK_URL` | Optional chat alerts |
-| `BACKUP_HOUR`, `BACKUP_KEEP` | Optional: hour of the nightly backup (default 3, server time) and how many to keep (default 14) |
+| `BACKUP_HOUR`, `BACKUP_KEEP` | Optional: hour of the nightly backup (default 3, server time) and how many to keep (default 7) |
 
 Settings that are not secret (`PUBLIC_URL`, `GOOGLE_ALLOWED_DOMAIN`, `TZ`) are in `fly.toml`.
 

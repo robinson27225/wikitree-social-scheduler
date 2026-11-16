@@ -57,7 +57,7 @@ TikTok is posted by hand like X and Reddit (its API needs an audit and a per-pos
 |-
 | Secrets: DATA_KEY, BACKUP_PASSPHRASE, BRIEF_TOKEN, and every login || [PASSWORD MANAGER NAME] (never on this page)
 |-
-| Automatic backups || Private Cloudflare R2 bucket [BUCKET NAME], newest 14 kept; Cloudflare admins: [NAMES]
+| Automatic backups || Private Cloudflare R2 bucket [BUCKET NAME], newest 7 kept; Cloudflare admins: [NAMES]
 |-
 | Meta (Facebook, Instagram) developer app || App ID 1057535013708941 (check this is the right one in the Meta dashboard); admins: [NAMES]
 |-

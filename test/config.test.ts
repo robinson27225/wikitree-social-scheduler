@@ -14,6 +14,14 @@ const goodServer = {
   DATA_KEY: "dGVzdC1kYXRhLWtleS1mb3ItYXV0aC10ZXN0cy0wMTIzNDU2Nzg5",
 };
 
+describe("how many backups are kept", () => {
+  it("is a week of nightly backups unless BACKUP_KEEP says otherwise", () => {
+    assert.equal(loadConfig({}).backup.keep, 7);
+    assert.equal(loadConfig({ BACKUP_KEEP: "30" }).backup.keep, 30);
+    assert.throws(() => loadConfig({ BACKUP_KEEP: "0" }), /BACKUP_KEEP/);
+  });
+});
+
 describe("local mode", () => {
   it("is the default and listens only on this computer", () => {
     const c = loadConfig({ PORT: "5000" });

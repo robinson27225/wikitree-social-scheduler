@@ -75,7 +75,7 @@ Tokens made from a person's own Facebook login can stop working if that person l
 
 ## Backups
 
-- **Automatic:** every night around 03:00 server time, the server makes an encrypted backup and uploads it to a private Cloudflare R2 bucket, keeping the newest 14. **Settings > Backups and disk** shows the last one and has a **Back up now** button.
+- **Automatic:** every night around 03:00 server time, the server makes an encrypted backup and uploads it to a private Cloudflare R2 bucket, keeping the newest 7 (a week of nightly backups). **Settings > Backups and disk** shows the last one and has a **Back up now** button.
 - The passphrase (`BACKUP_PASSPHRASE`) is in the password manager. Without it a backup can't be opened.
 - A backup carries the accounts and their sign-ins, posts and their state, settings, and the media of posts not yet sent. It does not carry unused library pictures or posted posts' media.
 - **Restoring** onto a new or empty server is in `DEPLOY.md` ("Restoring a backup"). A server that already has accounts or posts ignores restore files, so a stray file can't overwrite live work.

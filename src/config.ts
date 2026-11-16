@@ -80,7 +80,7 @@ function parseDataKey(raw: string | undefined): Buffer | null {
 function parseBackup(env: NodeJS.ProcessEnv): BackupConfig {
   const passphrase = (env.BACKUP_PASSPHRASE ?? "").trim() || null;
   if (passphrase && passphrase.length < 12) throw new ConfigError("BACKUP_PASSPHRASE must be at least 12 characters.");
-  const keep = Number(env.BACKUP_KEEP ?? 14);
+  const keep = Number(env.BACKUP_KEEP ?? 7);
   const hour = Number(env.BACKUP_HOUR ?? 3);
   if (!Number.isInteger(keep) || keep < 1) throw new ConfigError("BACKUP_KEEP must be a whole number of at least 1.");
   if (!Number.isInteger(hour) || hour < 0 || hour > 23) throw new ConfigError("BACKUP_HOUR must be a whole number from 0 to 23.");
